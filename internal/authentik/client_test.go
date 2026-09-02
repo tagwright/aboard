@@ -468,6 +468,68 @@ func TestListApplicationsFollowsPagination(t *testing.T) {
 	}
 }
 
+func TestListApplicationsStopsOnZeroNext(t *testing.T) {
+	// The real Authentik 2025.6.4 API returns "next": 0 (not null) on the last
+	// page. A walk that treats a non-nil next as "there is another page" would
+	// then request page 0 and get a 404 "Invalid page." This asserts the walk
+	// stops on a zero next and never requests page 0.
+	var pagesSeen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		pagesSeen = append(pagesSeen, page)
+		w.Header().Set("Content-Type", "application/json")
+		if page == "0" {
+			// Mirror Django REST's real rejection so a regression fails loudly.
+			w.WriteHeader(404)
+			_, _ = io.WriteString(w, `{"detail":"Invalid page."}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"pagination":{"next":0,"previous":0,"count":1,"current":1,"total_pages":1},"results":[{"pk":"a","slug":"one"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	cli := New(srv.URL, testToken)
+
+	apps, err := cli.ListApplications(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("ListApplications: %v", err)
+	}
+	if len(apps) != 1 || apps[0].Slug != "one" {
+		t.Fatalf("apps = %+v, want the single page", apps)
+	}
+	for _, p := range pagesSeen {
+		if p == "0" {
+			t.Fatalf("walk requested page 0 (pages seen: %v)", pagesSeen)
+		}
+	}
+}
+
+func TestListApplicationsMultiPageZeroNextTerminates(t *testing.T) {
+	// Two real pages: page 1 points next to 2, page 2 (the last) reports next 0,
+	// the 2025.6.4 sentinel. The walk must collect both pages and then stop.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("page") {
+		case "2":
+			_, _ = io.WriteString(w, `{"pagination":{"next":0,"previous":1,"count":3,"current":2,"total_pages":2},"results":[{"pk":"c","slug":"three"}]}`)
+		case "1":
+			_, _ = io.WriteString(w, `{"pagination":{"next":2,"previous":0,"count":3,"current":1,"total_pages":2},"results":[{"pk":"a","slug":"one"},{"pk":"b","slug":"two"}]}`)
+		default:
+			w.WriteHeader(404)
+			_, _ = io.WriteString(w, `{"detail":"Invalid page."}`)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	cli := New(srv.URL, testToken)
+
+	apps, err := cli.ListApplications(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("ListApplications: %v", err)
+	}
+	if len(apps) != 3 || apps[0].Slug != "one" || apps[2].Slug != "three" {
+		t.Fatalf("apps = %+v, want all three across two pages", apps)
+	}
+}
+
 func TestAPIErrorRedactsTokenAndSecret(t *testing.T) {
 	var cap capture
 	const secret = "inward-only-client-secret-value"
