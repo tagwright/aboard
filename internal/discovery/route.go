@@ -59,7 +59,7 @@ func newParse() *parse {
 var exactKeys = map[string]bool{
 	"enable": true, "name": true, "slug": true, "title": true,
 	"provider": true, "host": true, "flow": true, "adopt": true,
-	"groups": true, "policies": true, "require": true,
+	"groups": true, "groups.claim": true, "policies": true, "require": true,
 	"launch": true, "icon": true, "description": true,
 }
 

@@ -58,6 +58,7 @@ authentik:
 		{"invalidation flow", cfg.Flows.Invalidation, DefaultInvalidationFlow},
 		{"outpost", cfg.Outpost, DefaultOutpost},
 		{"signing key", cfg.OIDC.SigningKey, DefaultSigningKey},
+		{"groups scope", cfg.OIDC.GroupsScope, DefaultGroupsScope},
 		{"proxy", cfg.Proxy, DefaultProxy},
 		{"middleware", cfg.Traefik.Middleware, DefaultMiddleware},
 		{"traefik version", cfg.Traefik.Version, DefaultTraefikVersion},
@@ -90,6 +91,7 @@ flows:
 outpost: remote-site
 oidc:
   signing_key: my-cert
+  groups_scope: roles
 proxy: none
 traefik:
   middleware: my-mw
@@ -114,6 +116,9 @@ defaults:
 	}
 	if cfg.OIDC.SigningKey != "my-cert" {
 		t.Errorf("signing_key: got %q", cfg.OIDC.SigningKey)
+	}
+	if cfg.OIDC.GroupsScope != "roles" {
+		t.Errorf("groups_scope: got %q, want the explicit roles", cfg.OIDC.GroupsScope)
 	}
 	if cfg.Proxy != ProxyNone {
 		t.Errorf("proxy: got %q", cfg.Proxy)

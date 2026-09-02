@@ -247,6 +247,56 @@ func TestDiscoverGroupsThreeState(t *testing.T) {
 	}
 }
 
+func TestDiscoverGroupsClaimDefaultOn(t *testing.T) {
+	base := with(hostRule("app.example.com"), map[string]string{"aboard.enable": "true"})
+
+	// Absent: group-claim is DEFAULT ON.
+	sp, issues := Discover(traefikProxy(), Input{ContainerName: "app", Labels: base})
+	if !sp.GroupsClaim {
+		t.Error("group-claim must default on when aboard.groups.claim is absent")
+	}
+	if hasCode(issues, CodeGroupsClaimInvalid) {
+		t.Error("absent groups.claim must not be an error")
+	}
+
+	// Explicit true: still on, no error, and not flagged an unknown suffix.
+	sp, issues = Discover(traefikProxy(), Input{ContainerName: "app",
+		Labels: with(base, map[string]string{"aboard.groups.claim": "true"})})
+	if !sp.GroupsClaim {
+		t.Error("aboard.groups.claim=true must keep claim on")
+	}
+	if len(issues) != 0 {
+		t.Errorf("groups.claim=true must be clean, got %v", issues)
+	}
+
+	// Explicit false: opt out.
+	sp, _ = Discover(traefikProxy(), Input{ContainerName: "app",
+		Labels: with(base, map[string]string{"aboard.groups.claim": "false"})})
+	if sp.GroupsClaim {
+		t.Error("aboard.groups.claim=false must opt out")
+	}
+
+	// Malformed: a loud error, not a silent widening.
+	_, issues = Discover(traefikProxy(), Input{ContainerName: "app",
+		Labels: with(base, map[string]string{"aboard.groups.claim": "yes"})})
+	if !hasCode(issues, CodeGroupsClaimInvalid) {
+		t.Errorf("groups.claim=yes must be a groups-claim-invalid error, got %v", issues)
+	}
+
+	// Claim is independent of the provider type and of group GATING: an OIDC app
+	// with no groups still gets claim on.
+	oidc := with(map[string]string{
+		"aboard.enable":        "true",
+		"aboard.provider":      "oidc",
+		"aboard.oidc.redirect": "https://app.example.com/callback",
+		"aboard.oidc.secret":   "app-secret",
+	}, nil)
+	sp, _ = Discover(traefikProxy(), Input{ContainerName: "app", Labels: oidc})
+	if !sp.GroupsClaim {
+		t.Error("group-claim must default on for an OIDC provider too")
+	}
+}
+
 func TestDiscoverCosmeticSetFlags(t *testing.T) {
 	base := with(hostRule("app.example.com"), map[string]string{"aboard.enable": "true"})
 

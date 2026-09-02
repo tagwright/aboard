@@ -200,6 +200,25 @@ type Spec struct {
 	// distinguishing "unset, use the fleet default" from an explicit none.
 	GroupsSet bool
 
+	// GroupsClaim reports whether aboard should ensure the protected app RECEIVES
+	// the user's Authentik group membership, so the app can do its own role and
+	// permission mapping. It is DEFAULT ON, opted out per container with
+	// aboard.groups.claim=false. Its job differs by provider type (see the
+	// reconciler): for OIDC aboard attaches the configured groups scope mapping BY
+	// NAME (oidc.groups_scope, default "groups"), never creating it; for SAML the
+	// managed default Groups mapping already ships; and for forward-auth group
+	// membership rides the shared middleware's X-authentik-groups response header,
+	// which aboard verifies and surfaces rather than mutates.
+	//
+	// Group-claim is distinct from group GATING (Groups above): gating decides who
+	// may enter, claim decides whether the app is TOLD which groups the entrant is
+	// in. An app can be open to any authenticated user and still want the claim.
+	//
+	// Discovery always sets this on an enabled Spec (true unless the label opts
+	// out), so a zero-value Spec built directly in a test has claim off, which is a
+	// no-op for every path but the OIDC scope attach.
+	GroupsClaim bool
+
 	// Policies are EXISTING Authentik policy names bound to the Application,
 	// never created. From aboard.policies (Fork 5).
 	Policies []string

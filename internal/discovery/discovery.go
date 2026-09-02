@@ -198,6 +198,24 @@ func parseAccess(norm map[string]string, sp *spec.Spec, issues *[]Issue) {
 	}
 	sp.Policies = splitCSV(norm["policies"])
 
+	// Group-claim delivery is DEFAULT ON: aboard ensures the app receives the
+	// user's group membership so it can do its own role mapping. It is opted out
+	// per container with aboard.groups.claim=false. Unlike group GATING (who may
+	// enter), this decides whether the app is TOLD which groups the entrant is in,
+	// so it is independent of the three-state Groups convention above.
+	sp.GroupsClaim = true
+	if v, ok := norm["groups.claim"]; ok {
+		switch v {
+		case "true":
+			// Explicit on, the default.
+		case "false":
+			sp.GroupsClaim = false
+		default:
+			*issues = append(*issues, Issue{SeverityError, CodeGroupsClaimInvalid,
+				fmt.Sprintf("aboard.groups.claim %q must be true or false", v)})
+		}
+	}
+
 	switch norm["require"] {
 	case "", string(spec.RequireAny):
 		sp.Require = spec.RequireAny
