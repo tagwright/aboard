@@ -23,7 +23,7 @@ type fakeAPI struct {
 	samlByName      map[string]*authentik.SAMLProvider
 	providerRefByPK map[int]*authentik.ProviderRef
 	appBySlug      map[string]*authentik.Application
-	apps           []authentik.Application
+	allProviders   []authentik.AllProvider
 	groups         map[string]*authentik.Group
 	policies       map[string]*authentik.Policy
 	certs          map[string]*authentik.CertificateKeyPair
@@ -311,11 +311,11 @@ func (f *fakeAPI) DeleteApplication(_ context.Context, slug string) error {
 	return nil
 }
 
-func (f *fakeAPI) ListApplications(_ context.Context, _ int) ([]authentik.Application, error) {
-	if err := f.rec("ListApplications"); err != nil {
+func (f *fakeAPI) ListAllProviders(_ context.Context, _ int) ([]authentik.AllProvider, error) {
+	if err := f.rec("ListAllProviders"); err != nil {
 		return nil, err
 	}
-	return f.apps, nil
+	return f.allProviders, nil
 }
 
 func (f *fakeAPI) SetApplicationIconURL(_ context.Context, slug, iconURL string) error {

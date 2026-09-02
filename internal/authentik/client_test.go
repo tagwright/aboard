@@ -573,7 +573,7 @@ func TestCreateBindingBody(t *testing.T) {
 	}
 }
 
-func TestListApplicationsFollowsPagination(t *testing.T) {
+func TestListAllProvidersFollowsPagination(t *testing.T) {
 	var cap capture
 	// A two-page listing: page 1 points next to 2, page 2 has next null.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -581,23 +581,26 @@ func TestListApplicationsFollowsPagination(t *testing.T) {
 		cap.path = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Query().Get("page") == "2" {
-			_, _ = io.WriteString(w, `{"pagination":{"next":null,"previous":1,"count":3},"results":[{"pk":"c","slug":"three"}]}`)
+			_, _ = io.WriteString(w, `{"pagination":{"next":null,"previous":1,"count":3},"results":[{"pk":3,"name":"three (aboard)","component":"ak-provider-oauth2-form","assigned_application_slug":"three"}]}`)
 			return
 		}
-		_, _ = io.WriteString(w, `{"pagination":{"next":2,"previous":null,"count":3},"results":[{"pk":"a","slug":"one"},{"pk":"b","slug":"two"}]}`)
+		_, _ = io.WriteString(w, `{"pagination":{"next":2,"previous":null,"count":3},"results":[{"pk":1,"name":"one (aboard)","component":"ak-provider-proxy-form","assigned_application_slug":"one"},{"pk":2,"name":"two (aboard)","component":"ak-provider-proxy-form","assigned_application_slug":"two"}]}`)
 	}))
 	t.Cleanup(srv.Close)
 	cli := New(srv.URL, testToken)
 
-	apps, err := cli.ListApplications(context.Background(), 2)
+	provs, err := cli.ListAllProviders(context.Background(), 2)
 	if err != nil {
-		t.Fatalf("ListApplications: %v", err)
+		t.Fatalf("ListAllProviders: %v", err)
 	}
-	if len(apps) != 3 {
-		t.Fatalf("got %d apps across pages, want 3", len(apps))
+	if len(provs) != 3 {
+		t.Fatalf("got %d providers across pages, want 3", len(provs))
 	}
-	if apps[0].Slug != "one" || apps[2].Slug != "three" {
-		t.Errorf("apps = %+v", apps)
+	if provs[0].AssignedApplicationSlug != "one" || provs[2].AssignedApplicationSlug != "three" {
+		t.Errorf("providers = %+v", provs)
+	}
+	if cap.path != "/api/v3/providers/all/" {
+		t.Errorf("path = %q, want the polymorphic providers/all list", cap.path)
 	}
 }
 
@@ -645,25 +648,7 @@ func TestGetApplicationBySlugDetailRouteNotFound(t *testing.T) {
 	}
 }
 
-func TestListApplicationsRequestsFullList(t *testing.T) {
-	var lastQuery string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		lastQuery = r.URL.RawQuery
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"pagination":{"next":0,"previous":0,"count":1},"results":[{"pk":"a","slug":"one"}]}`)
-	}))
-	t.Cleanup(srv.Close)
-	cli := New(srv.URL, testToken)
-
-	if _, err := cli.ListApplications(context.Background(), 50); err != nil {
-		t.Fatalf("ListApplications: %v", err)
-	}
-	if !strings.Contains(lastQuery, "superuser_full_list=true") {
-		t.Errorf("query = %q, want superuser_full_list=true", lastQuery)
-	}
-}
-
-func TestListApplicationsStopsOnZeroNext(t *testing.T) {
+func TestListAllProvidersStopsOnZeroNext(t *testing.T) {
 	// The real Authentik 2025.6.4 API returns "next": 0 (not null) on the last
 	// page. A walk that treats a non-nil next as "there is another page" would
 	// then request page 0 and get a 404 "Invalid page." This asserts the walk
@@ -679,17 +664,17 @@ func TestListApplicationsStopsOnZeroNext(t *testing.T) {
 			_, _ = io.WriteString(w, `{"detail":"Invalid page."}`)
 			return
 		}
-		_, _ = io.WriteString(w, `{"pagination":{"next":0,"previous":0,"count":1,"current":1,"total_pages":1},"results":[{"pk":"a","slug":"one"}]}`)
+		_, _ = io.WriteString(w, `{"pagination":{"next":0,"previous":0,"count":1,"current":1,"total_pages":1},"results":[{"pk":1,"name":"one (aboard)","component":"ak-provider-proxy-form","assigned_application_slug":"one"}]}`)
 	}))
 	t.Cleanup(srv.Close)
 	cli := New(srv.URL, testToken)
 
-	apps, err := cli.ListApplications(context.Background(), 100)
+	provs, err := cli.ListAllProviders(context.Background(), 100)
 	if err != nil {
-		t.Fatalf("ListApplications: %v", err)
+		t.Fatalf("ListAllProviders: %v", err)
 	}
-	if len(apps) != 1 || apps[0].Slug != "one" {
-		t.Fatalf("apps = %+v, want the single page", apps)
+	if len(provs) != 1 || provs[0].AssignedApplicationSlug != "one" {
+		t.Fatalf("providers = %+v, want the single page", provs)
 	}
 	for _, p := range pagesSeen {
 		if p == "0" {
@@ -698,16 +683,16 @@ func TestListApplicationsStopsOnZeroNext(t *testing.T) {
 	}
 }
 
-func TestListApplicationsMultiPageZeroNextTerminates(t *testing.T) {
+func TestListAllProvidersMultiPageZeroNextTerminates(t *testing.T) {
 	// Two real pages: page 1 points next to 2, page 2 (the last) reports next 0,
 	// the 2025.6.4 sentinel. The walk must collect both pages and then stop.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Query().Get("page") {
 		case "2":
-			_, _ = io.WriteString(w, `{"pagination":{"next":0,"previous":1,"count":3,"current":2,"total_pages":2},"results":[{"pk":"c","slug":"three"}]}`)
+			_, _ = io.WriteString(w, `{"pagination":{"next":0,"previous":1,"count":3,"current":2,"total_pages":2},"results":[{"pk":3,"name":"three (aboard)","component":"ak-provider-oauth2-form","assigned_application_slug":"three"}]}`)
 		case "1":
-			_, _ = io.WriteString(w, `{"pagination":{"next":2,"previous":0,"count":3,"current":1,"total_pages":2},"results":[{"pk":"a","slug":"one"},{"pk":"b","slug":"two"}]}`)
+			_, _ = io.WriteString(w, `{"pagination":{"next":2,"previous":0,"count":3,"current":1,"total_pages":2},"results":[{"pk":1,"name":"one (aboard)","component":"ak-provider-proxy-form","assigned_application_slug":"one"},{"pk":2,"name":"two (aboard)","component":"ak-provider-proxy-form","assigned_application_slug":"two"}]}`)
 		default:
 			w.WriteHeader(404)
 			_, _ = io.WriteString(w, `{"detail":"Invalid page."}`)
@@ -716,12 +701,12 @@ func TestListApplicationsMultiPageZeroNextTerminates(t *testing.T) {
 	t.Cleanup(srv.Close)
 	cli := New(srv.URL, testToken)
 
-	apps, err := cli.ListApplications(context.Background(), 2)
+	provs, err := cli.ListAllProviders(context.Background(), 2)
 	if err != nil {
-		t.Fatalf("ListApplications: %v", err)
+		t.Fatalf("ListAllProviders: %v", err)
 	}
-	if len(apps) != 3 || apps[0].Slug != "one" || apps[2].Slug != "three" {
-		t.Fatalf("apps = %+v, want all three across two pages", apps)
+	if len(provs) != 3 || provs[0].AssignedApplicationSlug != "one" || provs[2].AssignedApplicationSlug != "three" {
+		t.Fatalf("providers = %+v, want all three across two pages", provs)
 	}
 }
 

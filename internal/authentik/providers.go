@@ -46,6 +46,64 @@ type ProviderRef struct {
 	Component string `json:"component"`
 }
 
+// AllProvider is one entry from the polymorphic /providers/all/ LIST route. On
+// top of the by-pk fields it carries the application the provider is assigned to,
+// as a denormalized slug and name (assigned_application_slug /
+// assigned_application_name on the schema). That assigned slug is the load-bearing
+// field for the orphan scan: it lets aboard derive the full set of applications it
+// owns from the providers alone, WITHOUT the access-filtered application LIST that
+// forced a superuser token. A provider with no application assigned carries an
+// empty slug, which is itself a dangling-provider orphan.
+//
+// Unlike the typed provider lists, /providers/all/ is polymorphic: each provider
+// appears exactly once under its true component (a proxy provider is
+// ak-provider-proxy-form here, not the oauth2 subclass form), so there is no
+// subclass double-counting to defend against.
+type AllProvider struct {
+	PK                      int    `json:"pk"`
+	Name                    string `json:"name"`
+	Component               string `json:"component"`
+	AssignedApplicationSlug string `json:"assigned_application_slug"`
+	AssignedApplicationName string `json:"assigned_application_name"`
+}
+
+// ListAllProviders returns every provider from the polymorphic /providers/all/
+// list, following pagination across pages with an explicit page_size. It is the
+// orphan scan's fleet-wide input, replacing the access-filtered application LIST:
+// /providers/all/ is NOT access-filtered (it gates on the base view_provider
+// permission), so a non-superuser scoped token sees every aboard-owned provider,
+// including those whose application its own user may not launch.
+//
+// The /providers/all/ viewset checks the BASE model permission
+// authentik_core.view_provider, which the typed view_*provider permissions do NOT
+// cover: without the base perm this route 403s even with every typed provider
+// read granted. See docs/DEPLOY.md.
+func (c *Client) ListAllProviders(ctx context.Context, pageSize int) ([]AllProvider, error) {
+	if pageSize <= 0 {
+		pageSize = 100
+	}
+	var all []AllProvider
+	page := 1
+	for {
+		q := pageSizeQuery(page, pageSize)
+		resp, err := listPage[AllProvider](ctx, c, allProvidersPath, q)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, resp.Results...)
+		// On Authentik 2025.6.4 the pagination "next" field is a page NUMBER that is
+		// 0 (not null) on the last page, verified against the live API. So a non-nil
+		// Next is not by itself "there is another page": the walk stops unless Next
+		// names a page strictly beyond the current one. Treating 0 as "keep going"
+		// would request page 0 and get a 404 "Invalid page." from Django REST.
+		if resp.Pagination.Next == nil || *resp.Pagination.Next <= page {
+			break
+		}
+		page = *resp.Pagination.Next
+	}
+	return all, nil
+}
+
 // GetProviderByPK looks up any provider by its integer pk through the polymorphic
 // /providers/all/{pk}/ detail route and returns its name and component (type). A
 // 404 unwraps to ErrNotFound. This is the type-accurate by-pk lookup adoption

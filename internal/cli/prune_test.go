@@ -18,8 +18,8 @@ import (
 // The Orphans contract orders OIDC first, so the fake mirrors that.
 func twoOrphans() []reconcile.Orphan {
 	return []reconcile.Orphan{
-		{Slug: "grafana", Kind: spec.ProviderOIDC, ProviderPK: 7, AppPK: "app-grafana"},
-		{Slug: "wiki", Kind: spec.ProviderForwardAuth, ProviderPK: 3, AppPK: "app-wiki"},
+		{Slug: "grafana", Kind: spec.ProviderOIDC, ProviderPK: 7},
+		{Slug: "wiki", Kind: spec.ProviderForwardAuth, ProviderPK: 3},
 	}
 }
 

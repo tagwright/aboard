@@ -79,43 +79,6 @@ func (c *Client) SetApplicationIconURL(ctx context.Context, slug, iconURL string
 	return c.do(ctx, http.MethodPost, path, nil, FilePathRequest{URL: iconURL}, nil)
 }
 
-// ListApplications returns every application, following pagination.next across
-// pages with an explicit page_size. It is the one place a full-fleet listing can
-// span multiple pages (the reconcile-on-boot pass), so unlike the script's
-// single-app filters it must not assume a single page.
-func (c *Client) ListApplications(ctx context.Context, pageSize int) ([]Application, error) {
-	if pageSize <= 0 {
-		pageSize = 100
-	}
-	var all []Application
-	page := 1
-	for {
-		// superuser_full_list=true is required so the orphan scan sees EVERY
-		// application, not only the ones the token's user is allowed to launch: the
-		// list endpoint otherwise access-filters the result set (see
-		// GetApplicationBySlug). An orphan scan that silently misses filtered apps
-		// would under-report orphans and let prune leave live objects behind.
-		q := pageSizeQuery(page, pageSize)
-		q.Set("superuser_full_list", "true")
-		resp, err := listPage[Application](ctx, c, applicationsPath, q)
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, resp.Results...)
-		// On Authentik 2025.6.4 the pagination "next" field is a page NUMBER that
-		// is 0 (not null) on the last page, verified against the live API. So a
-		// non-nil Next is not by itself "there is another page": the walk stops
-		// unless Next names a page strictly beyond the current one. Treating 0 as
-		// "keep going" is exactly what made this loop request page 0 and get a 404
-		// "Invalid page." from Django REST.
-		if resp.Pagination.Next == nil || *resp.Pagination.Next <= page {
-			break
-		}
-		page = *resp.Pagination.Next
-	}
-	return all, nil
-}
-
 // ListBindingsForTarget returns every policy binding whose target is the given
 // application pk. It is the reconciler's input for the strict binding-ownership
 // pass. An application with no bindings yields an empty slice and a nil error,
