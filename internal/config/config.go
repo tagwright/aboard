@@ -91,6 +91,13 @@ type OIDC struct {
 	SigningKey string `yaml:"signing_key"`
 }
 
+// SAML is the SAML fleet block. SigningKey is a certificate NAME, not a secret:
+// the keypair Authentik signs outgoing SAML responses with. It defaults to
+// Authentik's own self-signed pair, the same pattern as oidc.signing_key.
+type SAML struct {
+	SigningKey string `yaml:"signing_key"`
+}
+
 // Traefik is the proxy-audit fleet block. Middleware is the one fleet-wide
 // forward-auth middleware name, and Version is the fleet's Traefik major, which
 // render output targets.
@@ -133,6 +140,7 @@ type Config struct {
 	Flows     Flows     `yaml:"flows"`
 	Outpost   string    `yaml:"outpost"`
 	OIDC      OIDC      `yaml:"oidc"`
+	SAML      SAML      `yaml:"saml"`
 	Proxy     string    `yaml:"proxy"`
 	Traefik   Traefik   `yaml:"traefik"`
 	Defaults  Defaults  `yaml:"defaults"`
@@ -199,6 +207,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.OIDC.SigningKey == "" {
 		c.OIDC.SigningKey = DefaultSigningKey
+	}
+	if c.SAML.SigningKey == "" {
+		c.SAML.SigningKey = DefaultSigningKey
 	}
 	if c.Proxy == "" {
 		c.Proxy = DefaultProxy

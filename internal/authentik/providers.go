@@ -13,6 +13,7 @@ import (
 const (
 	proxyProvidersPath  = "/api/v3/providers/proxy/"
 	oauth2ProvidersPath = "/api/v3/providers/oauth2/"
+	samlProvidersPath   = "/api/v3/providers/saml/"
 	allProvidersPath    = "/api/v3/providers/all/"
 )
 
@@ -25,6 +26,13 @@ const (
 const (
 	ComponentProxyProvider  = "ak-provider-proxy-form"
 	ComponentOAuth2Provider = "ak-provider-oauth2-form"
+
+	// ComponentSAMLProvider is the discriminator for a SAML provider, verified
+	// against authentik/providers/saml/models.py at tag version/2025.6.4. Unlike a
+	// proxy provider, a SAML provider is NOT a subclass of OAuth2Provider, so it
+	// is a clean, disjoint type: the oauth2 endpoint never returns it, and it is
+	// resolved by its own /providers/saml/ endpoint or the polymorphic by-pk route.
+	ComponentSAMLProvider = "ak-provider-saml-form"
 )
 
 // ProviderRef is the minimal cross-type view of a provider from the polymorphic
@@ -142,4 +150,64 @@ func (c *Client) PatchOAuth2Provider(ctx context.Context, pk int, body OAuth2Pro
 func (c *Client) DeleteOAuth2Provider(ctx context.Context, pk int) error {
 	path := oauth2ProvidersPath + strconv.Itoa(pk) + "/"
 	return c.do(ctx, http.MethodDelete, path, nil, nil, nil)
+}
+
+// GetSAMLProviderByName finds a SAML provider by exact name, the same shape as
+// the proxy and oauth2 lookups: the list endpoint filters by fuzzy search, so
+// the exact name is confirmed client-side. Not found returns ErrNotFound.
+func (c *Client) GetSAMLProviderByName(ctx context.Context, name string) (*SAMLProvider, error) {
+	q := url.Values{"search": {name}}
+	page, err := listPage[SAMLProvider](ctx, c, samlProvidersPath, q)
+	if err != nil {
+		return nil, err
+	}
+	for i := range page.Results {
+		if page.Results[i].Name == name {
+			return &page.Results[i], nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+// CreateSAMLProvider creates a SAML provider from body and returns it. No field
+// in body is a secret (a SAML provider signs with a keypair Authentik holds), so
+// nothing is scrubbed from an error here.
+func (c *Client) CreateSAMLProvider(ctx context.Context, body SAMLProviderRequest) (*SAMLProvider, error) {
+	var out SAMLProvider
+	if err := c.do(ctx, http.MethodPost, samlProvidersPath, nil, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// PatchSAMLProvider patches the SAML provider with the given integer pk from body
+// and returns the updated provider.
+func (c *Client) PatchSAMLProvider(ctx context.Context, pk int, body SAMLProviderRequest) (*SAMLProvider, error) {
+	var out SAMLProvider
+	path := samlProvidersPath + strconv.Itoa(pk) + "/"
+	if err := c.do(ctx, http.MethodPatch, path, nil, body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteSAMLProvider deletes the SAML provider with the given integer pk. A 404
+// unwraps to ErrNotFound.
+func (c *Client) DeleteSAMLProvider(ctx context.Context, pk int) error {
+	path := samlProvidersPath + strconv.Itoa(pk) + "/"
+	return c.do(ctx, http.MethodDelete, path, nil, nil, nil)
+}
+
+// GetSAMLMetadata returns the IdP metadata for the SAML provider with the given
+// pk (GET /api/v3/providers/saml/{pk}/metadata/). The response carries the
+// metadata XML as a string and a download URL, both non-secret. A 404 here means
+// the provider has no application assigned yet, which unwraps to ErrNotFound, so
+// a caller can distinguish "not yet linked" from a transport failure.
+func (c *Client) GetSAMLMetadata(ctx context.Context, pk int) (*SAMLMetadata, error) {
+	var out SAMLMetadata
+	path := samlProvidersPath + strconv.Itoa(pk) + "/metadata/"
+	if err := c.do(ctx, http.MethodGet, path, nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }

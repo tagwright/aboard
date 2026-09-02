@@ -213,6 +213,130 @@ func TestCreateOAuth2ProviderSetsClientSecret(t *testing.T) {
 	}
 }
 
+func TestGetSAMLProviderByNameExactMatch(t *testing.T) {
+	var cap capture
+	resp := `{"pagination":{"count":2},"results":[{"pk":20,"name":"kimai (aboard) copy"},{"pk":21,"name":"kimai (aboard)"}]}`
+	cli := newTestClient(t, &cap, 200, resp)
+
+	p, err := cli.GetSAMLProviderByName(context.Background(), "kimai (aboard)")
+	if err != nil {
+		t.Fatalf("GetSAMLProviderByName: %v", err)
+	}
+	if p.PK != 21 {
+		t.Errorf("pk = %d, want 21 (exact-name match)", p.PK)
+	}
+	if cap.path != "/api/v3/providers/saml/" {
+		t.Errorf("path = %q", cap.path)
+	}
+	if !strings.Contains(cap.query, "search=kimai") {
+		t.Errorf("query = %q", cap.query)
+	}
+}
+
+func TestCreateSAMLProviderBody(t *testing.T) {
+	var cap capture
+	cli := newTestClient(t, &cap, 201, `{"pk":42,"name":"kimai (aboard)","acs_url":"https://sp/acs","sp_binding":"post"}`)
+
+	body := SAMLProviderRequest{
+		Name:              "kimai (aboard)",
+		AuthorizationFlow: "flow-uuid",
+		InvalidationFlow:  "inval-uuid",
+		ACSUrl:            "https://sp.example.com/acs",
+		Audience:          "https://sp.example.com",
+		SpBinding:         SpBindingPost,
+		SigningKp:         "cert-uuid",
+		PropertyMappings:  []string{"pm-1", "pm-2"},
+	}
+	p, err := cli.CreateSAMLProvider(context.Background(), body)
+	if err != nil {
+		t.Fatalf("CreateSAMLProvider: %v", err)
+	}
+	if cap.method != http.MethodPost || cap.path != "/api/v3/providers/saml/" {
+		t.Errorf("method/path = %s %s", cap.method, cap.path)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal([]byte(cap.body), &sent); err != nil {
+		t.Fatalf("sent body not JSON: %v", err)
+	}
+	if sent["acs_url"] != "https://sp.example.com/acs" || sent["sp_binding"] != "post" || sent["signing_kp"] != "cert-uuid" {
+		t.Errorf("sent body = %v", sent)
+	}
+	// issuer is unset here and its request schema forbids an empty string, so
+	// omitempty must keep it out of the body (an unset issuer means the default).
+	if _, present := sent["issuer"]; present {
+		t.Errorf("issuer should be omitted when empty, body = %q", cap.body)
+	}
+	if p.PK != 42 {
+		t.Errorf("pk = %d, want 42", p.PK)
+	}
+}
+
+func TestGetSAMLPropertyMappingsKeepsManaged(t *testing.T) {
+	var cap capture
+	resp := `{"pagination":{"count":3},"results":[` +
+		`{"pk":"pm-user","name":"my custom","managed":null},` +
+		`{"pk":"pm-email","name":"Email","managed":"goauthentik.io/providers/saml/email"},` +
+		`{"pk":"pm-name","name":"Name","managed":"goauthentik.io/providers/saml/name"}]}`
+	cli := newTestClient(t, &cap, 200, resp)
+
+	pks, err := cli.GetSAMLPropertyMappings(context.Background())
+	if err != nil {
+		t.Fatalf("GetSAMLPropertyMappings: %v", err)
+	}
+	if cap.path != "/api/v3/propertymappings/provider/saml/" {
+		t.Errorf("path = %q", cap.path)
+	}
+	// Only the two managed defaults are kept, the user-made one is dropped, and
+	// the result is name/pk-sorted for a stable body.
+	if len(pks) != 2 || pks[0] != "pm-email" || pks[1] != "pm-name" {
+		t.Errorf("pks = %v, want the two managed defaults sorted", pks)
+	}
+}
+
+func TestGetSAMLPropertyMappingByName(t *testing.T) {
+	var cap capture
+	resp := `{"pagination":{"count":2},"results":[{"pk":"pm-x","name":"Kimai Roles extra"},{"pk":"pm-y","name":"Kimai Roles"}]}`
+	cli := newTestClient(t, &cap, 200, resp)
+	m, err := cli.GetSAMLPropertyMappingByName(context.Background(), "Kimai Roles")
+	if err != nil {
+		t.Fatalf("GetSAMLPropertyMappingByName: %v", err)
+	}
+	if m.PK != "pm-y" {
+		t.Errorf("pk = %q, want exact-name match", m.PK)
+	}
+}
+
+func TestGetSAMLMetadata(t *testing.T) {
+	var cap capture
+	resp := `{"metadata":"<EntityDescriptor xmlns=\"urn:oasis:names:tc:SAML:2.0:metadata\"></EntityDescriptor>","download_url":"https://auth/application/saml/kimai/metadata/?download"}`
+	cli := newTestClient(t, &cap, 200, resp)
+
+	md, err := cli.GetSAMLMetadata(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("GetSAMLMetadata: %v", err)
+	}
+	if cap.method != http.MethodGet || cap.path != "/api/v3/providers/saml/42/metadata/" {
+		t.Errorf("method/path = %s %s", cap.method, cap.path)
+	}
+	if !strings.Contains(md.Metadata, "EntityDescriptor") {
+		t.Errorf("metadata = %q", md.Metadata)
+	}
+	if md.DownloadURL == "" {
+		t.Errorf("download_url empty")
+	}
+}
+
+func TestGetSAMLMetadataNotLinkedUnwraps(t *testing.T) {
+	var cap capture
+	// A SAML provider with no application assigned yet returns 404; it must unwrap
+	// to ErrNotFound so a caller distinguishes "not yet linked" from a failure.
+	cli := newTestClient(t, &cap, 404, `{"detail":"Provider has no application assigned"}`)
+	md, err := cli.GetSAMLMetadata(context.Background(), 42)
+	if md != nil || !errors.Is(err, ErrNotFound) {
+		t.Errorf("md=%v err=%v, want nil + ErrNotFound", md, err)
+	}
+}
+
 func TestPatchOutpostProviders(t *testing.T) {
 	var cap capture
 	cli := newTestClient(t, &cap, 200, `{"pk":"out-uuid","providers":[3,7,42]}`)

@@ -29,11 +29,25 @@ const (
 	// speak OIDC themselves.
 	ProviderOIDC ProviderType = "oidc"
 
-	// ProviderSAML is reserved. The enum is complete so discovery can recognize
-	// the value, but parsing rejects it with a loud validation error in v1,
-	// never a silent downgrade to forward-auth (Fork 1). It is not on the v1
-	// reconcile path.
+	// ProviderSAML is an Authentik SAML provider, for apps that speak SAML
+	// themselves. Like OIDC it is server-served: there is no outpost attach, no
+	// Traefik middleware, and no client secret, because it signs assertions with
+	// a keypair rather than sharing an inward secret (Fork 1). aboard automates
+	// the Authentik side and surfaces the IdP metadata URL, the ACS URL and
+	// entity ID still being configured on the SP by hand.
 	ProviderSAML ProviderType = "saml"
+)
+
+// SAMLBinding is the Service Provider binding a SAML provider sends its response
+// with (Authentik's SpBindingEnum). The default is SAMLBindingPost.
+type SAMLBinding string
+
+const (
+	// SAMLBindingPost is HTTP-POST, the default SP binding.
+	SAMLBindingPost SAMLBinding = "post"
+
+	// SAMLBindingRedirect is HTTP-Redirect.
+	SAMLBindingRedirect SAMLBinding = "redirect"
 )
 
 // Require is the Authentik policy-engine bind mode across every binding on an
@@ -104,6 +118,36 @@ type OIDCSpec struct {
 	// Scopes are scope-mapping names ADDED to the always-present openid, email,
 	// profile. From aboard.oidc.scopes.
 	Scopes []string
+}
+
+// SAMLSpec is the SAML sub-namespace of a Spec, meaningful only when Provider
+// is ProviderSAML. A key here under any other provider type is a validation
+// error discovery raises (Fork 1). SAML is server-served like OIDC: no outpost
+// attach, no Traefik middleware, and no client secret, so this sub-namespace
+// carries no secret-shaped field.
+type SAMLSpec struct {
+	// ACSUrl is the SP Assertion Consumer Service URL, absolute, required for a
+	// SAML provider. It is the SAML analog of aboard.oidc.redirect. From
+	// aboard.saml.acs.
+	ACSUrl string
+
+	// Audience is the SP audience restriction (commonly the SP entity ID).
+	// Optional at the API, though most SPs need it. From aboard.saml.audience.
+	Audience string
+
+	// Issuer is an optional IdP issuer (EntityID) override. Empty means
+	// Authentik's own default. From aboard.saml.issuer.
+	Issuer string
+
+	// Binding is the SP binding the provider responds with. Defaults to
+	// SAMLBindingPost. From aboard.saml.binding.
+	Binding SAMLBinding
+
+	// Mappings are extra SAML property-mapping names ADDED to the managed default
+	// attribute mappings, which are always attached so assertions carry
+	// attributes. It is the SAML analog of aboard.oidc.scopes. From
+	// aboard.saml.mappings.
+	Mappings []string
 }
 
 // Spec is the desired Authentik state for one container, built from its
@@ -193,6 +237,10 @@ type Spec struct {
 	// OIDC is the OIDC sub-namespace, meaningful only when Provider is
 	// ProviderOIDC.
 	OIDC OIDCSpec
+
+	// SAML is the SAML sub-namespace, meaningful only when Provider is
+	// ProviderSAML.
+	SAML SAMLSpec
 }
 
 // GroupsNone reports the aboard.groups=none sentinel: the label was set but
