@@ -25,33 +25,44 @@ import (
 // block. With --setup it prints the once-per-fleet shared middleware definition
 // and the recommended fleet catch-all callback router.
 func newRenderCmd() *cobra.Command {
-	var setup, blueprintFlag bool
+	var setup, blueprintFlag, serviceAccountFlag bool
 
 	cmd := &cobra.Command{
 		Use:   "render [service]",
-		Short: "Print the Traefik labels for a service, --setup for the fleet pieces, or --blueprint for the identity IaC",
+		Short: "Print the Traefik labels for a service, --setup for the fleet pieces, --blueprint for the identity IaC, or --service-account for aboard's own least-privilege identity",
 		Long: `render prints the config aboard recommends. It writes nothing: aboard never
 edits Traefik configuration or Authentik identity objects, these are for you.
 
-  aboard render <service>    the middleware line and, on a mixed host, the
-                             outpost callback router for one service
-  aboard render --setup      the once-per-fleet shared forward-auth middleware
-                             definition and the fleet catch-all callback router
-  aboard render --blueprint  an Authentik blueprint defining the groups your
-                             labels bind and the OIDC groups scope mapping,
-                             the identity-layer objects aboard references by
-                             name but never creates`,
+  aboard render <service>          the middleware line and, on a mixed host, the
+                                   outpost callback router for one service
+  aboard render --setup            the once-per-fleet shared forward-auth
+                                   middleware definition and the catch-all router
+  aboard render --blueprint        an Authentik blueprint defining the groups your
+                                   labels bind and the OIDC groups scope mapping,
+                                   the identity objects aboard references by name
+  aboard render --service-account  an Authentik blueprint declaring aboard's OWN
+                                   least-privilege identity: a non-superuser
+                                   service-account user, an RBAC role with exactly
+                                   aboard's minimal permissions, the role-to-user
+                                   binding, and an intent=api token (Authentik
+                                   generates the key, it is NOT in the output)`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if setup && blueprintFlag {
-				return fmt.Errorf("render takes at most one of --setup or --blueprint")
+			modes := 0
+			for _, on := range []bool{setup, blueprintFlag, serviceAccountFlag} {
+				if on {
+					modes++
+				}
 			}
-			if setup || blueprintFlag {
+			if modes > 1 {
+				return fmt.Errorf("render takes at most one of --setup, --blueprint, or --service-account")
+			}
+			if modes == 1 {
 				if len(args) != 0 {
-					return fmt.Errorf("render --setup / --blueprint takes no service argument")
+					return fmt.Errorf("render --setup / --blueprint / --service-account takes no service argument")
 				}
 			} else if len(args) != 1 {
-				return fmt.Errorf("render requires exactly one <service> argument, or --setup / --blueprint")
+				return fmt.Errorf("render requires exactly one <service> argument, or --setup / --blueprint / --service-account")
 			}
 
 			cfg, err := loadConfig()
@@ -62,6 +73,10 @@ edits Traefik configuration or Authentik identity objects, these are for you.
 
 			if setup {
 				runRenderSetup(cfg, u)
+				return nil
+			}
+			if serviceAccountFlag {
+				runRenderServiceAccount(cfg, u)
 				return nil
 			}
 
@@ -76,6 +91,7 @@ edits Traefik configuration or Authentik identity objects, these are for you.
 
 	cmd.Flags().BoolVar(&setup, "setup", false, "print the once-per-fleet Traefik pieces instead of a single service")
 	cmd.Flags().BoolVar(&blueprintFlag, "blueprint", false, "print the Authentik identity blueprint (groups + the OIDC groups scope mapping)")
+	cmd.Flags().BoolVar(&serviceAccountFlag, "service-account", false, "print the Authentik blueprint for aboard's own least-privilege service account, role, and API token")
 	return cmd
 }
 
@@ -114,6 +130,17 @@ func runRenderBlueprint(ctx context.Context, cfg *config.Config, lister containe
 // runRenderSetup prints the once-per-fleet Traefik pieces. Pure output.
 func runRenderSetup(cfg *config.Config, u ui) {
 	u.print(traefik.RenderSetup(cfg))
+}
+
+// runRenderServiceAccount prints the Authentik blueprint for aboard's OWN
+// least-privilege identity: the service-account user, the RBAC role with exactly
+// aboard's minimal permissions, the role-to-user binding, and an intent=api
+// token. The token's Authentik identifier defaults to the aboard.yml token NAME
+// so the emitted object and the secret aboard reads line up. Pure output: it
+// touches no Docker and no Authentik, and the emitted blueprint contains NO key
+// value (Authentik generates the token key at reconcile).
+func runRenderServiceAccount(cfg *config.Config, u ui) {
+	u.print(blueprint.RenderServiceAccount(cfg.Authentik.Token))
 }
 
 // runRenderService finds the named service among the running containers, discovers

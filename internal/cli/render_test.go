@@ -147,6 +147,41 @@ func TestRunRenderBlueprint_CollectsGroupsAndScope(t *testing.T) {
 	}
 }
 
+// TestRunRenderServiceAccount_EmitsLeastPrivilegeIdentity proves --service-account
+// emits the blueprint for aboard's own identity: the service-account user, the
+// role with the base-model provider perm, the token with intent api and no key,
+// and the token identifier taken from the aboard.yml token NAME.
+func TestRunRenderServiceAccount_EmitsLeastPrivilegeIdentity(t *testing.T) {
+	cfg := testConfig() // Token: "aboard-api-token"
+
+	u, buf := newTestUI()
+	runRenderServiceAccount(cfg, u)
+	out := buf.String()
+
+	for _, want := range []string{
+		"version: 1",
+		"blueprints.goauthentik.io/instantiate",
+		"authentik_core.user",
+		"type: service_account",
+		"authentik_rbac.role",
+		"authentik_core.view_provider",
+		"authentik_core.token",
+		"intent: api",
+		"identifier: \"aboard-api-token\"",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("service-account blueprint missing %q, got:\n%s", want, out)
+		}
+	}
+	// Never a key value, never superuser.
+	if strings.Contains(out, "\n      key:") {
+		t.Errorf("service-account blueprint must carry no token key, got:\n%s", out)
+	}
+	if strings.Contains(out, "is_superuser: true") {
+		t.Errorf("service-account blueprint must declare nothing superuser, got:\n%s", out)
+	}
+}
+
 // selfExcludedContainer is the Authentik server container, which the blueprint
 // collection must skip via the shared self-exclusion.
 func selfExcludedContainer() runtime.Container {
