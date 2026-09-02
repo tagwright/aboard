@@ -29,6 +29,7 @@ func (d *Daemon) fullPass(ctx context.Context) {
 	}
 
 	d.setFleetCallback(detectFleetCallback(containers))
+	d.setGroupsHeader(detectGroupsHeader(containers, d.cfg.Traefik.Middleware))
 
 	var enabled []string
 	for _, c := range containers {
@@ -118,6 +119,13 @@ func (d *Daemon) processContainer(ctx context.Context, c runtime.Container) (str
 		if d.cfg.Proxy == config.ProxyTraefik && sp.Provider == spec.ProviderForwardAuth {
 			vr := traefik.Verify(d.cfg, &sp, c.Labels, d.fleetCallbackPresent())
 			all = append(all, vr.Findings...)
+
+			// Verify-and-surface group delivery: a forward-auth app that wants the
+			// group-claim (default) but whose shared middleware drops the groups
+			// header will authenticate fine yet never learn the user's groups.
+			if iss := traefik.VerifyGroupsDelivery(d.cfg, &sp, d.groupsHeaderState()); iss != nil {
+				all = append(all, *iss)
+			}
 		}
 	}
 
@@ -142,6 +150,7 @@ func (d *Daemon) refreshFromList(ctx context.Context) {
 		return
 	}
 	d.setFleetCallback(detectFleetCallback(containers))
+	d.setGroupsHeader(detectGroupsHeader(containers, d.cfg.Traefik.Middleware))
 
 	var enabled []string
 	for _, c := range containers {

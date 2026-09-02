@@ -182,6 +182,114 @@ func TestReconcileOIDCCreateNoAttach(t *testing.T) {
 	}
 }
 
+func TestReconcileOIDCGroupClaimAttachesGroupsScope(t *testing.T) {
+	f := newFake().withFlows()
+	f.groups["g-admins"] = &authentik.Group{PK: "grp-admins", Name: "g-admins"}
+	f.certs["authentik Self-signed Certificate"] = &authentik.CertificateKeyPair{PK: "cert-1", Name: "authentik Self-signed Certificate"}
+	f.scopes["openid"] = &authentik.ScopeMapping{PK: "sm-openid", ScopeName: "openid"}
+	f.scopes["email"] = &authentik.ScopeMapping{PK: "sm-email", ScopeName: "email"}
+	f.scopes["profile"] = &authentik.ScopeMapping{PK: "sm-profile", ScopeName: "profile"}
+	// The groups scope mapping exists (defined as IaC in a blueprint), unmanaged.
+	f.scopes["groups"] = &authentik.ScopeMapping{PK: "sm-groups", ScopeName: "groups"}
+
+	const secret40 = "0123456789012345678901234567890123456789"
+	s := spec.Spec{
+		Enable: true, Name: "gitea", Slug: "gitea", Title: "Gitea",
+		Provider: spec.ProviderOIDC, Host: "git.example.com", Require: spec.RequireAny,
+		Groups: []string{"g-admins"}, GroupsSet: true,
+		GroupsClaim: true, // default on, delivered
+		OIDC: spec.OIDCSpec{
+			Redirect:   []string{"https://git.example.com/callback"},
+			SecretName: "gitea-secret",
+			ClientKind: spec.ClientConfidential,
+		},
+	}
+
+	r := New(f, testConfig(), fixedResolver(secret40))
+	if _, err := r.Reconcile(context.Background(), s); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	body := f.createdOAuth[0]
+	// openid, email, profile ALWAYS, plus the groups scope for the claim.
+	want := map[string]bool{"sm-openid": true, "sm-email": true, "sm-profile": true, "sm-groups": true}
+	if len(body.PropertyMappings) != 4 {
+		t.Fatalf("property_mappings = %v, want 4 (openid,email,profile,groups)", body.PropertyMappings)
+	}
+	for _, pk := range body.PropertyMappings {
+		if !want[pk] {
+			t.Errorf("unexpected scope mapping pk %q", pk)
+		}
+		delete(want, pk)
+	}
+	if len(want) != 0 {
+		t.Errorf("group-claim must attach the groups scope, missing: %v", want)
+	}
+}
+
+func TestReconcileOIDCGroupClaimMissingScopeIsLoudError(t *testing.T) {
+	f := newFake().withFlows()
+	f.certs["authentik Self-signed Certificate"] = &authentik.CertificateKeyPair{PK: "cert-1", Name: "authentik Self-signed Certificate"}
+	f.scopes["openid"] = &authentik.ScopeMapping{PK: "sm-openid", ScopeName: "openid"}
+	f.scopes["email"] = &authentik.ScopeMapping{PK: "sm-email", ScopeName: "email"}
+	f.scopes["profile"] = &authentik.ScopeMapping{PK: "sm-profile", ScopeName: "profile"}
+	// No "groups" scope mapping: the real default state of a fresh Authentik.
+
+	const secret40 = "0123456789012345678901234567890123456789"
+	s := spec.Spec{
+		Enable: true, Name: "gitea", Slug: "gitea", Title: "Gitea",
+		Provider: spec.ProviderOIDC, Host: "git.example.com", Require: spec.RequireAny,
+		GroupsSet: true, // none sentinel: no group gate, isolates the scope path
+		GroupsClaim: true,
+		OIDC: spec.OIDCSpec{
+			Redirect:   []string{"https://git.example.com/callback"},
+			SecretName: "gitea-secret",
+			ClientKind: spec.ClientConfidential,
+		},
+	}
+
+	r := New(f, testConfig(), fixedResolver(secret40))
+	_, err := r.Reconcile(context.Background(), s)
+	if errCode(err) != CodeGroupsScopeMissing {
+		t.Fatalf("err code = %q, want %q", errCode(err), CodeGroupsScopeMissing)
+	}
+	// The gap must be caught BEFORE any provider is written: never a half-live app.
+	if f.called("CreateOAuth2Provider") || f.called("PatchOAuth2Provider") {
+		t.Error("a missing groups scope must be rejected before any provider write")
+	}
+}
+
+func TestReconcileOIDCGroupClaimOffSkipsGroupsScope(t *testing.T) {
+	f := newFake().withFlows()
+	f.certs["authentik Self-signed Certificate"] = &authentik.CertificateKeyPair{PK: "cert-1", Name: "authentik Self-signed Certificate"}
+	f.scopes["openid"] = &authentik.ScopeMapping{PK: "sm-openid", ScopeName: "openid"}
+	f.scopes["email"] = &authentik.ScopeMapping{PK: "sm-email", ScopeName: "email"}
+	f.scopes["profile"] = &authentik.ScopeMapping{PK: "sm-profile", ScopeName: "profile"}
+	// No groups scope, and claim is OFF, so its absence must NOT fail the reconcile.
+
+	const secret40 = "0123456789012345678901234567890123456789"
+	s := spec.Spec{
+		Enable: true, Name: "gitea", Slug: "gitea", Title: "Gitea",
+		Provider: spec.ProviderOIDC, Host: "git.example.com", Require: spec.RequireAny,
+		GroupsSet: true,
+		GroupsClaim: false, // opted out
+		OIDC: spec.OIDCSpec{
+			Redirect:   []string{"https://git.example.com/callback"},
+			SecretName: "gitea-secret",
+			ClientKind: spec.ClientConfidential,
+		},
+	}
+
+	r := New(f, testConfig(), fixedResolver(secret40))
+	if _, err := r.Reconcile(context.Background(), s); err != nil {
+		t.Fatalf("claim off must not require a groups scope: %v", err)
+	}
+	body := f.createdOAuth[0]
+	if len(body.PropertyMappings) != 3 {
+		t.Errorf("property_mappings = %v, want just openid,email,profile with claim off", body.PropertyMappings)
+	}
+}
+
 func TestReconcileSAMLCreateNoAttachNoSecret(t *testing.T) {
 	f := newFake().withFlows().withSAMLDefaults()
 	f.samlMappingByName["Kimai Roles"] = &authentik.SAMLPropertyMapping{PK: "pm-roles", Name: "Kimai Roles"}

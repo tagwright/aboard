@@ -51,6 +51,7 @@ import (
 	"github.com/tagwright/aboard/internal/config"
 	"github.com/tagwright/aboard/internal/reconcile"
 	"github.com/tagwright/aboard/internal/spec"
+	"github.com/tagwright/aboard/internal/traefik"
 )
 
 // DefaultDebounceWindow is the quiet window a stable service identity must go
@@ -161,6 +162,7 @@ type Daemon struct {
 	// mu guards the mutable state below.
 	mu            sync.Mutex
 	fleetCallback bool
+	groupsHeader  traefik.GroupsHeaderState
 	orphans       []reconcile.Orphan
 	applied       map[string]appliedView
 }
@@ -305,6 +307,25 @@ func (d *Daemon) fleetCallbackPresent() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.fleetCallback
+}
+
+// setGroupsHeader records the latest forward-auth group-delivery scan: whether
+// the shared middleware's authResponseHeaders carries X-authentik-groups.
+func (d *Daemon) setGroupsHeader(state traefik.GroupsHeaderState) {
+	d.mu.Lock()
+	prev := d.groupsHeader
+	d.groupsHeader = state
+	d.mu.Unlock()
+	if prev != state {
+		d.log.Info("forward-auth groups header detection changed", "state", int(state))
+	}
+}
+
+// groupsHeaderState reads the latest forward-auth group-delivery scan.
+func (d *Daemon) groupsHeaderState() traefik.GroupsHeaderState {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.groupsHeader
 }
 
 // setOrphans stores the recomputed orphan set.

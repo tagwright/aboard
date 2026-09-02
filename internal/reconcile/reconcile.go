@@ -44,6 +44,14 @@ const (
 	// extra) that does not resolve. Sticky.
 	CodeScopeMissing = "scope-missing"
 
+	// CodeGroupsScopeMissing is a group-claim OIDC reconcile whose configured
+	// groups scope mapping (oidc.groups_scope) does not exist. aboard references
+	// the groups scope by name and never creates it, so a missing one is a loud
+	// skip-and-alert whose message points the operator at the blueprint aboard
+	// render --blueprint emits, or at opting out with aboard.groups.claim=false.
+	// Sticky, the same posture as a missing group.
+	CodeGroupsScopeMissing = "groups-scope-missing"
+
 	// CodeSecretMissing is an OIDC client secret whose named reference does not
 	// resolve. The error names the secret by NAME, never its value. Sticky.
 	CodeSecretMissing = "oidc-secret-missing"
@@ -344,6 +352,17 @@ func effectiveGroups(s spec.Spec, cfg *config.Config) []string {
 	return s.Groups
 }
 
+// groupsScopeName is the configured OIDC groups scope-mapping name aboard
+// attaches when group-claim is on. It falls back to the fleet default when the
+// config was built without Load's defaulting (a test config), so the reconciler
+// never resolves an empty scope name.
+func (r *Reconciler) groupsScopeName() string {
+	if r.cfg.OIDC.GroupsScope != "" {
+		return r.cfg.OIDC.GroupsScope
+	}
+	return config.DefaultGroupsScope
+}
+
 // policyEngineMode maps the require mode to Authentik's policy-engine mode.
 func policyEngineMode(req spec.Require) string {
 	if req == spec.RequireAll {
@@ -492,11 +511,28 @@ func (r *Reconciler) convergeOAuth2Provider(ctx context.Context, res *Result, s 
 		return 0, err
 	}
 
+	// The scope mappings: the always-present openid, email, profile, then any
+	// extras from aboard.oidc.scopes, then the groups scope when group-claim is on
+	// (default). dedupe keeps the groups scope from being requested twice if the
+	// operator also lists it in aboard.oidc.scopes. A missing groups scope is its
+	// own loud error pointing at the blueprint, distinct from a generic missing
+	// scope, because aboard references it by name and never creates it.
+	groupsScope := r.groupsScopeName()
+	scopeNames := append(append([]string{}, alwaysScopes...), s.OIDC.Scopes...)
+	if s.GroupsClaim {
+		scopeNames = append(scopeNames, groupsScope)
+	}
 	var mappingPKs []string
-	for _, scopeName := range dedupe(append(append([]string{}, alwaysScopes...), s.OIDC.Scopes...)) {
+	for _, scopeName := range dedupe(scopeNames) {
 		m, merr := r.api.GetScopeMappingByName(ctx, scopeName)
 		if merr != nil {
 			if errors.Is(merr, authentik.ErrNotFound) {
+				if s.GroupsClaim && scopeName == groupsScope {
+					return 0, r.fail(res, CodeGroupsScopeMissing,
+						"groups scope mapping "+groupsScope+" does not exist: group-claim is on but the OIDC groups scope is not defined. "+
+							"Add it as IaC (aboard render --blueprint emits an authentik_providers_oauth2.scopemapping named "+groupsScope+
+							"), or set aboard.groups.claim=false to opt out")
+				}
 				return 0, r.fail(res, CodeScopeMissing, "scope mapping "+scopeName+" does not exist")
 			}
 			return 0, r.fail(res, CodeAPI, "look up scope mapping "+scopeName+": "+merr.Error())

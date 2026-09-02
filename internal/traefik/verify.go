@@ -6,6 +6,7 @@ package traefik
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/tagwright/aboard/internal/config"
 	"github.com/tagwright/aboard/internal/discovery"
@@ -34,7 +35,91 @@ const (
 	// CodeRouterUnknown is an aboard.traefik.routers entry naming a router that
 	// does not exist on the container.
 	CodeRouterUnknown = "router-unknown"
+
+	// CodeGroupsHeaderMissing is a forward-auth app that wants group-claim while
+	// the shared middleware's authResponseHeaders is confirmed NOT to carry
+	// X-authentik-groups: the app is protected but will never receive the user's
+	// group membership. Unlike the other Traefik findings this is a WARNING, not a
+	// sticky error: authentication still works, only the app's own role mapping is
+	// starved, and aboard cannot fix it (the header lives in the shared middleware
+	// definition, which is immutable at runtime and aboard never mutates). Its job
+	// here is verify-and-surface, per the group-claim design.
+	CodeGroupsHeaderMissing = "groups-header-missing"
 )
+
+// GroupsResponseHeader is the forward-auth response header that carries the
+// user's Authentik group membership to a protected app. Under forward-auth,
+// group delivery rides this header inside the SHARED middleware's
+// authResponseHeaders (not anything on aboard's side), so aboard's job is to
+// VERIFY it is present and SURFACE a finding when it is not, never to mutate it.
+const GroupsResponseHeader = "X-authentik-groups"
+
+// GroupsHeaderState is the tri-state outcome of scanning the fleet for the
+// forward-auth middleware definition's authResponseHeaders.
+type GroupsHeaderState int
+
+const (
+	// GroupsHeaderUnknown means the middleware definition was not found among the
+	// scanned labels. It may live in Traefik file or static config aboard cannot
+	// read, so this is deliberately NOT treated as a gap: a false alarm on a
+	// working fleet is its own harm.
+	GroupsHeaderUnknown GroupsHeaderState = iota
+
+	// GroupsHeaderPresent means the definition was found and its
+	// authResponseHeaders includes X-authentik-groups.
+	GroupsHeaderPresent
+
+	// GroupsHeaderAbsent means the definition was found and its
+	// authResponseHeaders does NOT include X-authentik-groups: a confirmed gap
+	// aboard surfaces.
+	GroupsHeaderAbsent
+)
+
+// DetectGroupsHeader scans labelSets for the definition of the forward-auth
+// middleware named ref (cfg.Traefik.Middleware) and reports whether its
+// authResponseHeaders includes X-authentik-groups. It is the group-delivery
+// analog of fleet-callback detection (fleet.go): the middleware definition lives
+// on the traefik container, so the daemon scans every container's labels once
+// and passes the result into the per-container verify. The middleware label name
+// is the bare name before any @provider (authentik@docker keys off "authentik").
+func DetectGroupsHeader(labelSets []map[string]string, ref string) GroupsHeaderState {
+	name := middlewareLabelName(ref)
+	key := "traefik.http.middlewares." + name + ".forwardauth.authResponseHeaders"
+	for _, labels := range labelSets {
+		v, ok := labels[key]
+		if !ok {
+			continue
+		}
+		for _, h := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(h), GroupsResponseHeader) {
+				return GroupsHeaderPresent
+			}
+		}
+		return GroupsHeaderAbsent
+	}
+	return GroupsHeaderUnknown
+}
+
+// VerifyGroupsDelivery returns the forward-auth group-delivery finding for one
+// container, or nil. It fires only when the proxy is Traefik, the provider is
+// forward-auth, group-claim is on, and the middleware definition was found and
+// confirmed to lack X-authentik-groups. A not-found middleware (Unknown) and a
+// present header both draw nothing. This keeps the forward-auth path light: the
+// meat of group-claim is OIDC, and here aboard only verifies and surfaces.
+func VerifyGroupsDelivery(cfg *config.Config, sp *spec.Spec, state GroupsHeaderState) *discovery.Issue {
+	if cfg.Proxy != config.ProxyTraefik || sp.Provider != spec.ProviderForwardAuth || !sp.GroupsClaim {
+		return nil
+	}
+	if state != GroupsHeaderAbsent {
+		return nil
+	}
+	return &discovery.Issue{
+		Severity: discovery.SeverityWarning,
+		Code:     CodeGroupsHeaderMissing,
+		Message: fmt.Sprintf("%s wants group-claim but the forward-auth middleware %s does not carry %s in authResponseHeaders: the app will not receive the user's groups. Add it to the middleware definition (aboard render --setup shows the full set), or set aboard.groups.claim=false",
+			sp.Name, cfg.Traefik.Middleware, GroupsResponseHeader),
+	}
+}
 
 // VerifyResult is the outcome of auditing one container's Traefik labels against
 // the mixed-host callback rule. Findings are the sticky errors to alert on.
