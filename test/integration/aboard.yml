@@ -1,0 +1,22 @@
+# aboard.yml for the Phase 5 integration harness. Points at the DISPOSABLE
+# Authentik on aboard-itest-net. The token here is a NAME resolved from a file in
+# the test secrets dir; no secret value lives in this file.
+authentik:
+  url: http://aboard-itest-server:9000
+  public_url: https://auth.itest.local
+  token: aboard-api-token
+flows:
+  authorization: default-provider-authorization-implicit-consent
+  invalidation: default-provider-invalidation-flow
+outpost: embedded
+oidc:
+  signing_key: authentik Self-signed Certificate
+proxy: traefik
+traefik:
+  middleware: authentik@docker
+  version: 3
+defaults:
+  # Empty fleet default: a forward-auth app with no aboard.groups label is bound
+  # to nothing (any authenticated user), which keeps the hero case a clean
+  # app+provider+attach with no group prerequisite.
+  groups: []

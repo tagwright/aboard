@@ -1,0 +1,95 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# DISPOSABLE Authentik for aboard's Phase 5 integration harness. Fully
+# self-contained: its own postgres, redis, bridge network, and a bootstrap
+# token so aboard gets an API token with zero UI clicks. NOTHING here binds a
+# host production file, and it never joins a production network. Tear down with:
+#
+#   docker compose -p aboard-itest down -v
+#
+# Bring up with: docker compose -p aboard-itest up -d
+#
+# The bootstrap token below is a throwaway used ONLY against this ephemeral
+# instance. It is not a secret of any real system.
+
+services:
+  aboard-itest-db:
+    image: postgres:16-alpine
+    container_name: aboard-itest-db
+    restart: "no"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentik"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    environment:
+      POSTGRES_USER: authentik
+      POSTGRES_DB: authentik
+      POSTGRES_PASSWORD: itest-db-pw
+    networks:
+      - aboard-itest-net
+
+  aboard-itest-redis:
+    image: redis:alpine
+    container_name: aboard-itest-redis
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - aboard-itest-net
+
+  aboard-itest-server:
+    image: ghcr.io/goauthentik/server:2025.6.4
+    container_name: aboard-itest-server
+    restart: "no"
+    command: server
+    environment:
+      AUTHENTIK_REDIS__HOST: aboard-itest-redis
+      AUTHENTIK_POSTGRESQL__HOST: aboard-itest-db
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: itest-db-pw
+      AUTHENTIK_SECRET_KEY: itest-secret-key-0000000000000000000000000000
+      AUTHENTIK_BOOTSTRAP_PASSWORD: akadmin
+      AUTHENTIK_BOOTSTRAP_EMAIL: akadmin@itest.local
+      AUTHENTIK_BOOTSTRAP_TOKEN: aboard-itest-bootstrap-token-throwaway
+      AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+    depends_on:
+      aboard-itest-db:
+        condition: service_healthy
+      aboard-itest-redis:
+        condition: service_healthy
+    networks:
+      - aboard-itest-net
+
+  aboard-itest-worker:
+    image: ghcr.io/goauthentik/server:2025.6.4
+    container_name: aboard-itest-worker
+    restart: "no"
+    command: worker
+    environment:
+      AUTHENTIK_REDIS__HOST: aboard-itest-redis
+      AUTHENTIK_POSTGRESQL__HOST: aboard-itest-db
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: itest-db-pw
+      AUTHENTIK_SECRET_KEY: itest-secret-key-0000000000000000000000000000
+      AUTHENTIK_BOOTSTRAP_PASSWORD: akadmin
+      AUTHENTIK_BOOTSTRAP_TOKEN: aboard-itest-bootstrap-token-throwaway
+      AUTHENTIK_DISABLE_UPDATE_CHECK: "true"
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+    depends_on:
+      aboard-itest-db:
+        condition: service_healthy
+      aboard-itest-redis:
+        condition: service_healthy
+    networks:
+      - aboard-itest-net
+
+networks:
+  aboard-itest-net:
+    name: aboard-itest-net
