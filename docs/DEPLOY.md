@@ -193,6 +193,43 @@ and lets you rotate or revoke aboard's access without touching anyone else.
    to the service account through a group. Do NOT enable "Is superuser" on the
    account or its group.
 
+### Generate it as a blueprint (recommended)
+
+Rather than click all of that in by hand, let aboard emit the whole least-
+privilege identity as an Authentik blueprint:
+
+```
+aboard render --service-account
+```
+
+It prints a ready-to-apply blueprint declaring the service-account user (a
+non-superuser `service_account`), an RBAC role carrying EXACTLY the permission
+set in the tables below (including the easily-missed base `view_provider`), the
+group that binds the role to the user, and an intent=api token for the account.
+The blueprint carries NO token key: Authentik generates the key at reconcile, and
+you retrieve it from the UI afterward. The token's Authentik identifier defaults
+to your `aboard.yml` `authentik.token` NAME so the emitted object and the secret
+aboard reads line up. As with every `render` subcommand aboard writes nothing:
+save the output where your Authentik worker reconciles blueprints (the same IaC
+path as `render --blueprint`, see [BLUEPRINTS.md](BLUEPRINTS.md)).
+
+Four-step onboarding, in order:
+
+1. **Apply the service-account blueprint.** Save `aboard render --service-account`
+   output into your Authentik blueprints directory and recreate
+   authentik-server + authentik-worker (or let the worker reconcile it). This
+   creates the account, role, group binding, and the token OBJECT.
+2. **Provision the token.** In the Authentik UI open the token (Directory then
+   Tokens, or the service account's Tokens tab), copy its key, and store it in
+   your secret store under the name `authentik.token` references (for example
+   `aboard-api-token`), via berm or the SOPS init step above. The key never goes
+   in `aboard.yml` or the blueprint.
+3. **Run the compose.** Bring up aboard's container (see [The container](#the-container)),
+   with the secret mounted so the token resolves by NAME at runtime.
+4. **Add a label.** Put `aboard.enable=true` (and `aboard.host=...` for a proxy
+   app) on a container and let the daemon reconcile it. `aboard validate` and
+   `aboard status` confirm the fleet.
+
 ### What the token must be allowed to do
 
 The aboard service account is a DEDICATED non-superuser service account. It does

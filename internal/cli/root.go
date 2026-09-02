@@ -8,8 +8,10 @@
 //
 //	aboard daemon              run the label-driven reconcile-and-audit loop
 //	aboard status              read-only report of owned apps and orphans
-//	aboard render <service>    print the Traefik labels for one service
-//	aboard render --setup      print the once-per-fleet Traefik pieces
+//	aboard render <service>          print the Traefik labels for one service
+//	aboard render --setup            print the once-per-fleet Traefik pieces
+//	aboard render --blueprint        print the groups + OIDC scope identity IaC
+//	aboard render --service-account  print aboard's own least-privilege identity IaC
 //	aboard prune               delete orphaned aboard-owned objects (guarded)
 //	aboard validate            dry-run label check, no Authentik, no writes
 //	aboard version             print the build version
