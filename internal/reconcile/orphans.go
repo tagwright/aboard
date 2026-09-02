@@ -99,14 +99,22 @@ func (r *Reconciler) Teardown(ctx context.Context, slug string) error {
 		return &Error{Code: CodeAdoptConflict, Message: "application " + slug + " is not aboard-owned; teardown refuses to delete a hand-made object"}
 	}
 
-	if own.kind == spec.ProviderForwardAuth {
+	switch own.kind {
+	case spec.ProviderForwardAuth:
 		if derr := r.detachFromEmbedded(ctx, own.providerPK); derr != nil {
 			return derr
 		}
 		if derr := r.api.DeleteProxyProvider(ctx, own.providerPK); derr != nil && !errors.Is(derr, authentik.ErrNotFound) {
 			return derr
 		}
-	} else {
+	case spec.ProviderSAML:
+		// SAML is server-served: no outpost attach, so no detach. Just delete the
+		// provider.
+		if derr := r.api.DeleteSAMLProvider(ctx, own.providerPK); derr != nil && !errors.Is(derr, authentik.ErrNotFound) {
+			return derr
+		}
+	default:
+		// OIDC: no outpost step either.
 		if derr := r.api.DeleteOAuth2Provider(ctx, own.providerPK); derr != nil && !errors.Is(derr, authentik.ErrNotFound) {
 			return derr
 		}

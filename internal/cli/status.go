@@ -58,6 +58,12 @@ type appView struct {
 	provider spec.ProviderType
 	host     string
 	findings []discovery.Issue
+
+	// metadataURL is the composed IdP SAML metadata URL, set only for a saml
+	// provider. It is the non-secret handoff an operator feeds to the SP, the
+	// analog of the OIDC discovery URL, and it is composed from public_url without
+	// any Authentik call.
+	metadataURL string
 }
 
 // discoverEnabled lists containers and returns, for every enabled and non-excluded
@@ -90,13 +96,17 @@ func discoverEnabled(ctx context.Context, cfg *config.Config, lister containerLi
 			findings = append(findings, vr.Findings...)
 		}
 
-		apps = append(apps, appView{
+		av := appView{
 			service:  sp.Name,
 			slug:     sp.Slug,
 			provider: sp.Provider,
 			host:     sp.Host,
 			findings: findings,
-		})
+		}
+		if sp.Provider == spec.ProviderSAML {
+			av.metadataURL = samlMetadataURL(cfg, sp.Slug)
+		}
+		apps = append(apps, av)
 		slugs = append(slugs, sp.Slug)
 	}
 
@@ -141,6 +151,9 @@ func printEnabledApps(u ui, apps []appView) {
 			u.cyan(a.slug),
 			u.dim("["+string(a.provider)+"]"),
 			u.dim(host))
+		if a.metadataURL != "" {
+			u.printf("    %s %s\n", u.dim("SAML IdP metadata:"), a.metadataURL)
+		}
 	}
 }
 
@@ -176,12 +189,18 @@ func printOrphans(u ui, orphans []reconcile.Orphan) {
 		return
 	}
 	for _, o := range orphans {
-		if o.Kind == spec.ProviderOIDC {
+		switch o.Kind {
+		case spec.ProviderOIDC:
 			u.printf("  %s  %s  %s\n",
 				u.red("OIDC "),
 				u.cyan(o.Slug),
 				u.red("live client credentials, rotate on removal"))
-		} else {
+		case spec.ProviderSAML:
+			u.printf("  %s  %s  %s\n",
+				u.yellow("SAML "),
+				u.cyan(o.Slug),
+				u.dim("SAML provider, signs with a shared keypair, no standing credential"))
+		default:
 			u.printf("  %s  %s  %s\n",
 				u.yellow("proxy"),
 				u.cyan(o.Slug),

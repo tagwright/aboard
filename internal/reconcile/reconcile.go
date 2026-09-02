@@ -72,13 +72,13 @@ const (
 	// present in Authentik and absent from the labels was removed on reconcile.
 	CodeBindingRemoved = "binding-removed"
 
+	// CodeSAMLMappingMissing is a SAML property-mapping name (an extra from
+	// aboard.saml.mappings) that does not resolve. Sticky.
+	CodeSAMLMappingMissing = "saml-mapping-missing"
+
 	// CodeAPI is any other Authentik REST failure (a create, patch, delete, or
 	// list that errored for a reason other than not-found). Sticky.
 	CodeAPI = "api-error"
-
-	// CodeReserved is a reserved provider value reaching the reconciler. Defense
-	// in depth: discovery rejects saml first, so this should be unreachable.
-	CodeReserved = "reserved"
 )
 
 // hiddenLaunchURL is Authentik's value convention for hiding an application from
@@ -169,10 +169,6 @@ func (d desiredBinding) key() string {
 // front, before any write, so a refused adoption also leaves nothing behind.
 func (r *Reconciler) Reconcile(ctx context.Context, s spec.Spec) (*Result, error) {
 	res := &Result{Slug: s.Slug, Provider: s.Provider}
-
-	if s.Provider == spec.ProviderSAML {
-		return res, r.fail(res, CodeReserved, "provider saml is reserved in v1 and is not reconcilable")
-	}
 
 	slug := s.Slug
 	markerName := providerMarkerName(slug)
@@ -265,6 +261,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, s spec.Spec) (*Result, error
 		providerPK, err = r.convergeProxyProvider(ctx, res, s, markerName, authz.PK, inval.PK, adoptPK)
 	case spec.ProviderOIDC:
 		providerPK, err = r.convergeOAuth2Provider(ctx, res, s, slug, markerName, authz.PK, inval.PK, adoptPK)
+	case spec.ProviderSAML:
+		providerPK, err = r.convergeSAMLProvider(ctx, res, s, markerName, authz.PK, inval.PK, adoptPK)
 	default:
 		return res, r.fail(res, CodeProviderUnknown, "unknown provider type "+string(s.Provider))
 	}
@@ -300,7 +298,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, s spec.Spec) (*Result, error
 }
 
 // CodeProviderUnknown is an unrecognized provider type reaching the reconciler.
-// Defense in depth alongside CodeReserved; discovery validates the enum first.
+// Defense in depth; discovery validates the enum first.
 const CodeProviderUnknown = "provider-unknown"
 
 // fail records a SeverityError Issue on res and returns the matching typed
@@ -489,7 +487,7 @@ func (r *Reconciler) convergeOAuth2Provider(ctx context.Context, res *Result, s 
 		clientSecret = val
 	}
 
-	signingKey, err := r.resolveSigningKey(ctx, res)
+	signingKey, err := r.resolveSigningKey(ctx, res, r.cfg.OIDC.SigningKey)
 	if err != nil {
 		return 0, err
 	}
@@ -561,26 +559,104 @@ func (r *Reconciler) convergeOAuth2Provider(ctx context.Context, res *Result, s 
 	return patched.PK, nil
 }
 
-// resolveSigningKey resolves the OIDC signing key: the certificate named in
-// config, else the first available signing key. Neither present is a sticky
-// error.
-func (r *Reconciler) resolveSigningKey(ctx context.Context, res *Result) (string, error) {
-	cert, err := r.api.GetCertificateByName(ctx, r.cfg.OIDC.SigningKey)
+// resolveSigningKey resolves a provider signing key: the certificate named by
+// keyName (the fleet oidc.signing_key or saml.signing_key), else the first
+// available signing key. Neither present is a sticky error. It is shared by the
+// OIDC and SAML convergence, which both sign with a keypair Authentik holds.
+func (r *Reconciler) resolveSigningKey(ctx context.Context, res *Result, keyName string) (string, error) {
+	cert, err := r.api.GetCertificateByName(ctx, keyName)
 	if err == nil {
 		return cert.PK, nil
 	}
 	if !errors.Is(err, authentik.ErrNotFound) {
-		return "", r.fail(res, CodeAPI, "look up signing key "+r.cfg.OIDC.SigningKey+": "+err.Error())
+		return "", r.fail(res, CodeAPI, "look up signing key "+keyName+": "+err.Error())
 	}
 	first, ferr := r.api.GetFirstSigningKey(ctx)
 	if ferr != nil {
 		if errors.Is(ferr, authentik.ErrNotFound) {
 			return "", r.fail(res, CodeSigningKeyMissing,
-				"no signing key: neither "+r.cfg.OIDC.SigningKey+" nor any fallback certificate with a private key exists")
+				"no signing key: neither "+keyName+" nor any fallback certificate with a private key exists")
 		}
 		return "", r.fail(res, CodeAPI, "look up fallback signing key: "+ferr.Error())
 	}
 	return first.PK, nil
+}
+
+// convergeSAMLProvider creates or PATCHes the aboard-named SAML provider for a
+// SAML spec and returns its pk. It resolves the signing keypair (the fleet
+// saml.signing_key, else the first available), and the property mappings: the
+// managed default attribute mappings ALWAYS, plus any extras named in
+// aboard.saml.mappings, so the assertion always carries attributes. SAML has no
+// outpost step and no client secret.
+func (r *Reconciler) convergeSAMLProvider(ctx context.Context, res *Result, s spec.Spec, name, authzPK, invalPK string, adoptPK *int) (int, error) {
+	signingKey, err := r.resolveSigningKey(ctx, res, r.cfg.SAML.SigningKey)
+	if err != nil {
+		return 0, err
+	}
+
+	// Managed default attribute mappings, always attached, plus the named extras.
+	mappingPKs, err := r.api.GetSAMLPropertyMappings(ctx)
+	if err != nil {
+		return 0, r.fail(res, CodeAPI, "list managed SAML property mappings: "+err.Error())
+	}
+	for _, mName := range s.SAML.Mappings {
+		m, merr := r.api.GetSAMLPropertyMappingByName(ctx, mName)
+		if merr != nil {
+			if errors.Is(merr, authentik.ErrNotFound) {
+				return 0, r.fail(res, CodeSAMLMappingMissing, "SAML property mapping "+mName+" does not exist")
+			}
+			return 0, r.fail(res, CodeAPI, "look up SAML property mapping "+mName+": "+merr.Error())
+		}
+		mappingPKs = append(mappingPKs, m.PK)
+	}
+	mappingPKs = dedupe(mappingPKs)
+
+	binding := authentik.SpBindingPost
+	if s.SAML.Binding == spec.SAMLBindingRedirect {
+		binding = authentik.SpBindingRedirect
+	}
+
+	body := authentik.SAMLProviderRequest{
+		Name:              name,
+		AuthorizationFlow: authzPK,
+		InvalidationFlow:  invalPK,
+		ACSUrl:            s.SAML.ACSUrl,
+		Audience:          s.SAML.Audience,
+		Issuer:            s.SAML.Issuer,
+		SpBinding:         binding,
+		SigningKp:         signingKey,
+		PropertyMappings:  mappingPKs,
+	}
+
+	// Adoption: PATCH the pre-existing SAML provider the app points at, in place,
+	// renaming and reconfiguring it in one call rather than creating a duplicate.
+	if adoptPK != nil {
+		patched, perr := r.api.PatchSAMLProvider(ctx, *adoptPK, body)
+		if perr != nil {
+			return 0, r.fail(res, CodeAPI, "adopt SAML provider as "+name+": "+perr.Error())
+		}
+		res.Actions = append(res.Actions, "adopted SAML provider as "+name)
+		return patched.PK, nil
+	}
+
+	existing, err := r.api.GetSAMLProviderByName(ctx, name)
+	if err != nil {
+		if errors.Is(err, authentik.ErrNotFound) {
+			created, cerr := r.api.CreateSAMLProvider(ctx, body)
+			if cerr != nil {
+				return 0, r.fail(res, CodeAPI, "create SAML provider "+name+": "+cerr.Error())
+			}
+			res.Actions = append(res.Actions, "created SAML provider "+name)
+			return created.PK, nil
+		}
+		return 0, r.fail(res, CodeAPI, "look up SAML provider "+name+": "+err.Error())
+	}
+	patched, perr := r.api.PatchSAMLProvider(ctx, existing.PK, body)
+	if perr != nil {
+		return 0, r.fail(res, CodeAPI, "patch SAML provider "+name+": "+perr.Error())
+	}
+	res.Actions = append(res.Actions, "patched SAML provider "+name)
+	return patched.PK, nil
 }
 
 // convergeApplication creates or PATCHes the Application by slug and returns its

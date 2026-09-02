@@ -6,12 +6,14 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/tagwright/aboard/internal/config"
 	"github.com/tagwright/aboard/internal/daemon"
 	"github.com/tagwright/aboard/internal/discovery"
+	"github.com/tagwright/aboard/internal/spec"
 	"github.com/tagwright/aboard/internal/traefik"
 )
 
@@ -106,10 +108,53 @@ func runRenderService(ctx context.Context, cfg *config.Config, lister containerL
 			}
 		}
 
+		// SAML is server-served and has no Traefik half, so there is nothing to
+		// paste. What the operator needs is the IdP metadata URL to hand to the SP,
+		// the analog of the OIDC discovery URL. aboard automates the Authentik side
+		// only: the ACS URL and entity ID still get configured on the SP by hand.
+		if sp.Provider == spec.ProviderSAML {
+			u.print(renderSAML(cfg, &sp))
+			return nil
+		}
+
 		vr := traefik.Verify(cfg, &sp, c.Labels, fleetCallback)
 		u.print(traefik.RenderService(cfg, &sp, vr))
 		return nil
 	}
 
 	return fmt.Errorf("render: no aboard-enabled container found for service %q", service)
+}
+
+// samlMetadataURL composes the IdP SAML metadata URL for a slug from the fleet
+// public_url: {public_url}/application/saml/{slug}/metadata/. This is the stable
+// application-slug metadata endpoint Authentik serves once the provider is linked
+// to its application (verified against authentik/providers/saml/urls.py at tag
+// version/2025.6.4). It is composed statically, with no Authentik call, so render
+// stays pure output. An empty public_url yields a relative path the caller notes.
+func samlMetadataURL(cfg *config.Config, slug string) string {
+	base := strings.TrimRight(cfg.Authentik.PublicURL, "/")
+	return base + "/application/saml/" + slug + "/metadata/"
+}
+
+// renderSAML returns the SAML render output for a service: the IdP metadata URL
+// to hand to the SP, and the reminder that the ACS URL and entity ID are plumbed
+// into the SP by hand. It writes nothing, it returns a string.
+func renderSAML(cfg *config.Config, sp *spec.Spec) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# aboard render %s: SAML has no Traefik half, nothing to paste.\n", sp.Name)
+	b.WriteString("# aboard automates the Authentik side. Hand this IdP metadata URL to the SP:\n")
+	b.WriteString("#\n")
+	if cfg.Authentik.PublicURL == "" {
+		b.WriteString("#   (set authentik.public_url in aboard.yml to compose the absolute URL)\n")
+		b.WriteString("#   " + samlMetadataURL(cfg, sp.Slug) + "\n")
+	} else {
+		b.WriteString("#   " + samlMetadataURL(cfg, sp.Slug) + "\n")
+	}
+	b.WriteString("#\n")
+	b.WriteString("# The ACS URL and entity ID still get configured on the SP by hand:\n")
+	b.WriteString("#   ACS URL:   " + sp.SAML.ACSUrl + "\n")
+	if sp.SAML.Audience != "" {
+		b.WriteString("#   Entity ID: " + sp.SAML.Audience + "\n")
+	}
+	return b.String()
 }

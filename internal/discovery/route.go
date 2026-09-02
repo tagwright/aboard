@@ -31,11 +31,19 @@ type parse struct {
 	hasRedirectCSV bool
 	redirectIdx   map[int]string
 
+	// SAML sub-namespace.
+	samlACS      string
+	samlAudience string
+	samlIssuer   string
+	samlBinding  string
+	samlMappings string
+
 	// Membership lists for the wrong-provider and proxy:none checks. Each holds
 	// the full aboard.* label spelling so an error names what the operator wrote.
 	forwardKeys []string // outpost + forwardauth.* + traefik.*, forward-auth only
 	traefikKeys []string // aboard.traefik.*, the proxy:none sub-namespace
 	oidcKeys    []string // aboard.oidc.*
+	samlKeys    []string // aboard.saml.*
 }
 
 func newParse() *parse {
@@ -118,11 +126,34 @@ func (p *parse) route(suffix, val string, issues *[]Issue) {
 		p.oidcKeys = append(p.oidcKeys, "aboard."+suffix)
 		unknown(suffix, issues)
 
-	case suffix == "users" || strings.HasPrefix(suffix, "users."):
-		reserved(suffix, "aboard.users is reserved and rejected in v1", issues)
+	case suffix == "saml.acs":
+		p.samlACS = val
+		p.samlKeys = append(p.samlKeys, "aboard.saml.acs")
+
+	case suffix == "saml.audience":
+		p.samlAudience = val
+		p.samlKeys = append(p.samlKeys, "aboard.saml.audience")
+
+	case suffix == "saml.issuer":
+		p.samlIssuer = val
+		p.samlKeys = append(p.samlKeys, "aboard.saml.issuer")
+
+	case suffix == "saml.binding":
+		p.samlBinding = val
+		p.samlKeys = append(p.samlKeys, "aboard.saml.binding")
+
+	case suffix == "saml.mappings":
+		p.samlMappings = val
+		p.samlKeys = append(p.samlKeys, "aboard.saml.mappings")
 
 	case suffix == "saml" || strings.HasPrefix(suffix, "saml."):
-		reserved(suffix, "aboard.saml.* is reserved and rejected in v1", issues)
+		// A recognized sub-namespace prefix but an unknown key under it. Record
+		// membership so the wrong-provider check still names it, then flag unknown.
+		p.samlKeys = append(p.samlKeys, "aboard."+suffix)
+		unknown(suffix, issues)
+
+	case suffix == "users" || strings.HasPrefix(suffix, "users."):
+		reserved(suffix, "aboard.users is reserved and rejected in v1", issues)
 
 	case suffix == "caddy" || strings.HasPrefix(suffix, "caddy."):
 		reserved(suffix, "aboard.caddy.* is reserved for a future proxy integration", issues)

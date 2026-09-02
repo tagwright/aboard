@@ -20,6 +20,7 @@ type fakeAPI struct {
 	flows           map[string]*authentik.Flow
 	proxyByName     map[string]*authentik.ProxyProvider
 	oauthByName     map[string]*authentik.OAuth2Provider
+	samlByName      map[string]*authentik.SAMLProvider
 	providerRefByPK map[int]*authentik.ProviderRef
 	appBySlug      map[string]*authentik.Application
 	apps           []authentik.Application
@@ -42,6 +43,10 @@ type fakeAPI struct {
 	patchedProxy    map[int]authentik.ProxyProviderRequest
 	createdOAuth    []authentik.OAuth2ProviderRequest
 	patchedOAuth    map[int]authentik.OAuth2ProviderRequest
+	createdSAML     []authentik.SAMLProviderRequest
+	patchedSAML     map[int]authentik.SAMLProviderRequest
+	samlMappings    []string
+	samlMappingByName map[string]*authentik.SAMLPropertyMapping
 	createdApps     []authentik.ApplicationRequest
 	patchedApps     map[string]authentik.ApplicationRequest
 	createdBindings []authentik.PolicyBindingRequest
@@ -51,6 +56,7 @@ type fakeAPI struct {
 	patchedOutpost  []int
 	deletedProxyPKs []int
 	deletedOAuthPKs []int
+	deletedSAMLPKs  []int
 	deletedApps     []string
 }
 
@@ -59,6 +65,8 @@ func newFake() *fakeAPI {
 		flows:           map[string]*authentik.Flow{},
 		proxyByName:     map[string]*authentik.ProxyProvider{},
 		oauthByName:     map[string]*authentik.OAuth2Provider{},
+		samlByName:      map[string]*authentik.SAMLProvider{},
+		samlMappingByName: map[string]*authentik.SAMLPropertyMapping{},
 		providerRefByPK: map[int]*authentik.ProviderRef{},
 		appBySlug:      map[string]*authentik.Application{},
 		groups:         map[string]*authentik.Group{},
@@ -70,6 +78,7 @@ func newFake() *fakeAPI {
 		errOn:          map[string]error{},
 		patchedProxy:   map[int]authentik.ProxyProviderRequest{},
 		patchedOAuth:   map[int]authentik.OAuth2ProviderRequest{},
+		patchedSAML:    map[int]authentik.SAMLProviderRequest{},
 		patchedApps:    map[string]authentik.ApplicationRequest{},
 		iconSet:        map[string]string{},
 	}
@@ -199,6 +208,67 @@ func (f *fakeAPI) DeleteOAuth2Provider(_ context.Context, pk int) error {
 	}
 	f.deletedOAuthPKs = append(f.deletedOAuthPKs, pk)
 	return nil
+}
+
+func (f *fakeAPI) GetSAMLProviderByName(_ context.Context, name string) (*authentik.SAMLProvider, error) {
+	if err := f.rec("GetSAMLProviderByName"); err != nil {
+		return nil, err
+	}
+	if p, ok := f.samlByName[name]; ok {
+		return p, nil
+	}
+	return nil, authentik.ErrNotFound
+}
+
+func (f *fakeAPI) CreateSAMLProvider(_ context.Context, body authentik.SAMLProviderRequest) (*authentik.SAMLProvider, error) {
+	if err := f.rec("CreateSAMLProvider"); err != nil {
+		return nil, err
+	}
+	f.nextProviderPK++
+	p := &authentik.SAMLProvider{PK: f.nextProviderPK, Name: body.Name, ACSUrl: body.ACSUrl, Audience: body.Audience,
+		Issuer: body.Issuer, SpBinding: body.SpBinding, SigningKp: strPtr(body.SigningKp), PropertyMappings: body.PropertyMappings}
+	f.samlByName[body.Name] = p
+	f.createdSAML = append(f.createdSAML, body)
+	return p, nil
+}
+
+func (f *fakeAPI) PatchSAMLProvider(_ context.Context, pk int, body authentik.SAMLProviderRequest) (*authentik.SAMLProvider, error) {
+	if err := f.rec("PatchSAMLProvider"); err != nil {
+		return nil, err
+	}
+	f.patchedSAML[pk] = body
+	p := &authentik.SAMLProvider{PK: pk, Name: body.Name, ACSUrl: body.ACSUrl, Audience: body.Audience,
+		Issuer: body.Issuer, SpBinding: body.SpBinding, PropertyMappings: body.PropertyMappings}
+	if body.Name != "" {
+		f.samlByName[body.Name] = p
+		f.providerRefByPK[pk] = &authentik.ProviderRef{PK: pk, Name: body.Name, Component: authentik.ComponentSAMLProvider}
+	}
+	return p, nil
+}
+
+func (f *fakeAPI) DeleteSAMLProvider(_ context.Context, pk int) error {
+	if err := f.rec("DeleteSAMLProvider"); err != nil {
+		return err
+	}
+	f.deletedSAMLPKs = append(f.deletedSAMLPKs, pk)
+	return nil
+}
+
+func (f *fakeAPI) GetSAMLPropertyMappings(_ context.Context) ([]string, error) {
+	if err := f.rec("GetSAMLPropertyMappings"); err != nil {
+		return nil, err
+	}
+	return append([]string{}, f.samlMappings...), nil
+}
+
+func (f *fakeAPI) GetSAMLPropertyMappingByName(_ context.Context, name string) (*authentik.SAMLPropertyMapping, error) {
+	if err := f.rec("GetSAMLPropertyMappingByName"); err != nil {
+		return nil, err
+	}
+	if m, ok := f.samlMappingByName[name]; ok {
+		return m, nil
+	}
+	return nil, authentik.ErrNotFound
 }
 
 func (f *fakeAPI) GetApplicationBySlug(_ context.Context, slug string) (*authentik.Application, error) {
@@ -411,6 +481,7 @@ func testConfig() *config.Config {
 	c.Flows.Invalidation = "default-inval"
 	c.Outpost = config.DefaultOutpost
 	c.OIDC.SigningKey = "authentik Self-signed Certificate"
+	c.SAML.SigningKey = "authentik Self-signed Certificate"
 	c.Defaults.Groups = []string{"public-users"}
 	return c
 }
@@ -450,4 +521,33 @@ func baseForwardSpec() spec.Spec {
 		Groups:    []string{"g-admins"},
 		GroupsSet: true,
 	}
+}
+
+// baseSAMLSpec is a minimal SAML spec with one explicit group. SAML is
+// server-served: no host, no outpost, no client secret.
+func baseSAMLSpec() spec.Spec {
+	return spec.Spec{
+		Enable:    true,
+		Name:      "kimai",
+		Slug:      "kimai",
+		Title:     "Kimai",
+		Provider:  spec.ProviderSAML,
+		Require:   spec.RequireAny,
+		Groups:    []string{"g-admins"},
+		GroupsSet: true,
+		SAML: spec.SAMLSpec{
+			ACSUrl:   "https://kimai.example.com/auth/saml/acs",
+			Audience: "https://kimai.example.com",
+			Binding:  spec.SAMLBindingPost,
+		},
+	}
+}
+
+// withSAMLDefaults preloads the signing cert and the managed default SAML
+// property mappings the SAML convergence resolves.
+func (f *fakeAPI) withSAMLDefaults() *fakeAPI {
+	f.certs["authentik Self-signed Certificate"] = &authentik.CertificateKeyPair{PK: "cert-1", Name: "authentik Self-signed Certificate"}
+	f.groups["g-admins"] = &authentik.Group{PK: "grp-admins", Name: "g-admins"}
+	f.samlMappings = []string{"pm-email", "pm-name"}
+	return f
 }

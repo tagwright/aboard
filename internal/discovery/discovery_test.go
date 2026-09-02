@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/tagwright/aboard/internal/config"
+	"github.com/tagwright/aboard/internal/spec"
 )
 
 // traefikProxy is a minimal config with the Traefik proxy on, the default fleet.
@@ -96,13 +97,28 @@ func TestDiscoverTable(t *testing.T) {
 	}{
 		{"minimal ok", traefikProxy(), en(nil), ""},
 		{"unknown suffix", traefikProxy(), en(map[string]string{"aboard.grops": "x"}), CodeUnknownSuffix},
-		{"saml rejected", traefikProxy(), en(map[string]string{"aboard.provider": "saml"}), CodeSAMLReserved},
 		{"provider invalid", traefikProxy(), en(map[string]string{"aboard.provider": "ldap"}), CodeProviderInvalid},
 		{"require invalid", traefikProxy(), en(map[string]string{"aboard.require": "some"}), CodeRequireInvalid},
 		{"slug invalid", traefikProxy(), en(map[string]string{"aboard.slug": "Bad_Slug"}), CodeSlugInvalid},
 		{"users reserved", traefikProxy(), en(map[string]string{"aboard.users": "nate"}), CodeReserved},
-		{"saml subns reserved", traefikProxy(), en(map[string]string{"aboard.saml.metadata": "x"}), CodeReserved},
 		{"caddy reserved", traefikProxy(), en(map[string]string{"aboard.caddy.foo": "x"}), CodeReserved},
+
+		// SAML: unreserved, its own required-field and enum rules.
+		{"saml ok", traefikProxy(), en(map[string]string{"aboard.provider": "saml",
+			"aboard.saml.acs": "https://sp.example.com/acs", "aboard.saml.audience": "https://sp.example.com"}), ""},
+		{"saml ok redirect binding", traefikProxy(), en(map[string]string{"aboard.provider": "saml",
+			"aboard.saml.acs": "https://sp.example.com/acs", "aboard.saml.binding": "redirect"}), ""},
+		{"saml missing acs", traefikProxy(), en(map[string]string{"aboard.provider": "saml"}), CodeSAMLACSMissing},
+		{"saml acs not absolute", traefikProxy(), en(map[string]string{"aboard.provider": "saml",
+			"aboard.saml.acs": "/acs"}), CodeSAMLACSInvalid},
+		{"saml binding invalid", traefikProxy(), en(map[string]string{"aboard.provider": "saml",
+			"aboard.saml.acs": "https://sp.example.com/acs", "aboard.saml.binding": "artifact"}), CodeSAMLBindingInvalid},
+		{"saml key under forwardauth", traefikProxy(), en(map[string]string{"aboard.saml.acs": "https://sp.example.com/acs"}), CodeWrongProvider},
+		{"saml key under oidc", traefikProxy(), en(map[string]string{"aboard.provider": "oidc",
+			"aboard.oidc.redirect": "https://app.example.com/cb", "aboard.oidc.secret": "s",
+			"aboard.saml.acs": "https://sp.example.com/acs"}), CodeWrongProvider},
+		{"saml unknown subkey", traefikProxy(), en(map[string]string{"aboard.provider": "saml",
+			"aboard.saml.acs": "https://sp.example.com/acs", "aboard.saml.metadata": "x"}), CodeUnknownSuffix},
 
 		// Typed sub-namespace under the wrong provider.
 		{"oidc key under forwardauth", traefikProxy(),
@@ -162,6 +178,48 @@ func TestDiscoverTable(t *testing.T) {
 				t.Fatalf("want code %q, got %v", c.wantErr, issues)
 			}
 		})
+	}
+}
+
+// TestDiscoverSAMLSpec proves the SAML sub-namespace parses onto the Spec and
+// that a SAML container needs no Traefik host (host inference is skipped for it,
+// so a SAML app carrying no router labels is not a host-missing error).
+func TestDiscoverSAMLSpec(t *testing.T) {
+	labels := map[string]string{
+		"aboard.enable":         "true",
+		"aboard.provider":       "saml",
+		"aboard.title":          "Kimai",
+		"aboard.saml.acs":       "https://kimai.example.com/auth/saml/acs",
+		"aboard.saml.audience":  "https://kimai.example.com",
+		"aboard.saml.issuer":    "https://auth.example.com/custom",
+		"aboard.saml.binding":   "redirect",
+		"aboard.saml.mappings":  "Kimai Roles, Kimai Teams",
+		"aboard.groups":         "itest-users",
+	}
+	sp, issues := Discover(traefikProxy(), Input{ContainerName: "kimai", Labels: labels})
+	if HasError(issues) {
+		t.Fatalf("clean SAML spec with no host must not error: %v", issues)
+	}
+	if sp.Provider != spec.ProviderSAML {
+		t.Fatalf("provider = %q, want saml", sp.Provider)
+	}
+	if sp.Host != "" {
+		t.Errorf("SAML host should be empty (inference skipped), got %q", sp.Host)
+	}
+	if sp.SAML.ACSUrl != "https://kimai.example.com/auth/saml/acs" {
+		t.Errorf("acs = %q", sp.SAML.ACSUrl)
+	}
+	if sp.SAML.Audience != "https://kimai.example.com" {
+		t.Errorf("audience = %q", sp.SAML.Audience)
+	}
+	if sp.SAML.Issuer != "https://auth.example.com/custom" {
+		t.Errorf("issuer = %q", sp.SAML.Issuer)
+	}
+	if sp.SAML.Binding != spec.SAMLBindingRedirect {
+		t.Errorf("binding = %q, want redirect", sp.SAML.Binding)
+	}
+	if len(sp.SAML.Mappings) != 2 || sp.SAML.Mappings[0] != "Kimai Roles" || sp.SAML.Mappings[1] != "Kimai Teams" {
+		t.Errorf("mappings = %v", sp.SAML.Mappings)
 	}
 }
 

@@ -55,6 +55,16 @@ type API interface {
 	PatchOAuth2Provider(ctx context.Context, pk int, body authentik.OAuth2ProviderRequest) (*authentik.OAuth2Provider, error)
 	DeleteOAuth2Provider(ctx context.Context, pk int) error
 
+	// SAML provider convergence, teardown, and the IdP metadata handoff. SAML is
+	// a clean separate type (not an oauth2 subclass), server-served with no
+	// outpost step and no client secret.
+	GetSAMLProviderByName(ctx context.Context, name string) (*authentik.SAMLProvider, error)
+	CreateSAMLProvider(ctx context.Context, body authentik.SAMLProviderRequest) (*authentik.SAMLProvider, error)
+	PatchSAMLProvider(ctx context.Context, pk int, body authentik.SAMLProviderRequest) (*authentik.SAMLProvider, error)
+	DeleteSAMLProvider(ctx context.Context, pk int) error
+	GetSAMLPropertyMappings(ctx context.Context) ([]string, error)
+	GetSAMLPropertyMappingByName(ctx context.Context, name string) (*authentik.SAMLPropertyMapping, error)
+
 	// Application convergence, listing (orphans), teardown, and the icon action.
 	GetApplicationBySlug(ctx context.Context, slug string) (*authentik.Application, error)
 	CreateApplication(ctx context.Context, body authentik.ApplicationRequest) (*authentik.Application, error)

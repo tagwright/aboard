@@ -48,3 +48,34 @@ func TestRunStatus_ReportsAppsAndOrphans(t *testing.T) {
 		t.Fatalf("status must never delete, but Teardown was called: %v", rec.teardowns)
 	}
 }
+
+// TestRunStatus_SAMLMetadataAndOrphan proves status surfaces the IdP metadata URL
+// for an enabled SAML app and flags a SAML orphan distinctly from an OIDC one.
+func TestRunStatus_SAMLMetadataAndOrphan(t *testing.T) {
+	l := &fakeLister{containers: []runtime.Container{
+		container("kimai", map[string]string{
+			"aboard.enable":        "true",
+			"aboard.provider":      "saml",
+			"aboard.saml.acs":      "https://kimai.example.com/auth/saml/acs",
+			"aboard.saml.audience": "https://kimai.example.com",
+		}),
+	}}
+	rec := &fakeReconciler{orphans: []reconcile.Orphan{
+		{Slug: "oldsaml", Kind: spec.ProviderSAML, ProviderPK: 9, AppPK: "app-oldsaml"},
+	}}
+
+	u, buf := newTestUI()
+	if err := runStatus(context.Background(), testConfig(), l, rec, u); err != nil {
+		t.Fatalf("runStatus: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "https://auth.natecalvert.org/application/saml/kimai/metadata/") {
+		t.Errorf("expected the SAML IdP metadata URL for the enabled app, got:\n%s", out)
+	}
+	if !strings.Contains(out, "[saml]") {
+		t.Errorf("expected the saml provider tag, got:\n%s", out)
+	}
+	if !strings.Contains(out, "oldsaml") || !strings.Contains(out, "shared keypair") {
+		t.Errorf("expected the SAML orphan flagged distinctly, got:\n%s", out)
+	}
+}

@@ -52,6 +52,36 @@ func TestRunRenderService_NotFound(t *testing.T) {
 	}
 }
 
+// TestRunRenderService_SAMLMetadataURL proves render for a SAML app prints the
+// IdP metadata URL (the analog of the OIDC discovery URL) and no Traefik output,
+// since SAML has no proxy half.
+func TestRunRenderService_SAMLMetadataURL(t *testing.T) {
+	l := &fakeLister{containers: []runtime.Container{
+		container("kimai", map[string]string{
+			"aboard.enable":        "true",
+			"aboard.provider":      "saml",
+			"aboard.saml.acs":      "https://kimai.example.com/auth/saml/acs",
+			"aboard.saml.audience": "https://kimai.example.com",
+		}),
+	}}
+
+	u, buf := newTestUI()
+	if err := runRenderService(context.Background(), testConfig(), l, "kimai", u); err != nil {
+		t.Fatalf("runRenderService: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "https://auth.natecalvert.org/application/saml/kimai/metadata/") {
+		t.Errorf("expected the composed IdP metadata URL, got:\n%s", out)
+	}
+	if !strings.Contains(out, "https://kimai.example.com/auth/saml/acs") {
+		t.Errorf("expected the ACS URL reminder, got:\n%s", out)
+	}
+	// SAML has no Traefik half, so no middleware/callback labels are emitted.
+	if strings.Contains(out, "middlewares=") || strings.Contains(out, "PathPrefix") {
+		t.Errorf("SAML render must emit no Traefik labels, got:\n%s", out)
+	}
+}
+
 // TestRunRenderSetup_EmitsMiddlewareAndCatchAll proves --setup prints the shared
 // middleware definition and the fleet catch-all callback router.
 func TestRunRenderSetup_EmitsMiddlewareAndCatchAll(t *testing.T) {
