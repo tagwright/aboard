@@ -64,7 +64,7 @@ const (
 	CodeUnknownSuffix = "unknown-suffix"
 
 	// CodeReserved is a suffix the grammar reserves and rejects in v1
-	// (aboard.users, aboard.saml.*, aboard.caddy.*), held for additive arrival.
+	// (aboard.users, aboard.caddy.*), held for additive arrival.
 	CodeReserved = "reserved"
 
 	// CodeUnarmed is the declared-but-unarmed warning: aboard.* labels present
@@ -75,13 +75,10 @@ const (
 	// recognized enum members.
 	CodeProviderInvalid = "provider-invalid"
 
-	// CodeSAMLReserved is aboard.provider=saml, reserved and rejected in v1,
-	// never a silent downgrade to forward-auth.
-	CodeSAMLReserved = "saml-reserved"
-
 	// CodeWrongProvider is a typed sub-namespace key present under a provider type
 	// that does not honor it (an aboard.oidc.* under forwardauth, an
-	// aboard.outpost or aboard.traefik.* or aboard.forwardauth.* under oidc).
+	// aboard.outpost or aboard.traefik.* or aboard.forwardauth.* under oidc or
+	// saml, an aboard.saml.* under forwardauth or oidc).
 	CodeWrongProvider = "wrong-provider"
 
 	// CodeProxyNoneTraefik is any aboard.traefik.* key under config proxy: none.
@@ -131,6 +128,17 @@ const (
 	// CodeOIDCSecretForbidden is a public OIDC client that names an
 	// aboard.oidc.secret. A public client forbids the secret.
 	CodeOIDCSecretForbidden = "oidc-secret-forbidden"
+
+	// CodeSAMLACSMissing is a SAML provider with no aboard.saml.acs. The ACS URL
+	// is required for a SAML provider, the analog of oidc.redirect.
+	CodeSAMLACSMissing = "saml-acs-missing"
+
+	// CodeSAMLACSInvalid is an aboard.saml.acs that is not an absolute URL.
+	CodeSAMLACSInvalid = "saml-acs-invalid"
+
+	// CodeSAMLBindingInvalid is an aboard.saml.binding value that is not post or
+	// redirect.
+	CodeSAMLBindingInvalid = "saml-binding-invalid"
 )
 
 // Issue is a classified discovery finding for one container. It carries a

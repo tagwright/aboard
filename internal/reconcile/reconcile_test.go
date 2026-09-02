@@ -182,6 +182,166 @@ func TestReconcileOIDCCreateNoAttach(t *testing.T) {
 	}
 }
 
+func TestReconcileSAMLCreateNoAttachNoSecret(t *testing.T) {
+	f := newFake().withFlows().withSAMLDefaults()
+	f.samlMappingByName["Kimai Roles"] = &authentik.SAMLPropertyMapping{PK: "pm-roles", Name: "Kimai Roles"}
+
+	s := baseSAMLSpec()
+	s.SAML.Mappings = []string{"Kimai Roles"}
+	s.SAML.Binding = spec.SAMLBindingRedirect
+	s.SAML.Issuer = "https://auth.example.com/custom-issuer"
+
+	r := New(f, testConfig(), fixedResolver("unused"))
+	res, err := r.Reconcile(context.Background(), s)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if !f.called("CreateSAMLProvider") {
+		t.Fatal("expected the SAML provider to be created")
+	}
+	// SAML is server-served: no outpost step, and it is never attached.
+	if f.called("GetEmbeddedOutpost") || f.called("PatchOutpostProviders") || res.Attached {
+		t.Error("SAML must not touch an outpost or be attached")
+	}
+	// No client secret is ever resolved for SAML.
+	if f.called("CreateOAuth2Provider") {
+		t.Error("SAML must not create an OAuth2 provider")
+	}
+
+	body := f.createdSAML[0]
+	if body.Name != "kimai (aboard)" {
+		t.Errorf("name = %q, want the ownership-marked name", body.Name)
+	}
+	if body.ACSUrl != "https://kimai.example.com/auth/saml/acs" {
+		t.Errorf("acs_url = %q", body.ACSUrl)
+	}
+	if body.Audience != "https://kimai.example.com" {
+		t.Errorf("audience = %q", body.Audience)
+	}
+	if body.Issuer != "https://auth.example.com/custom-issuer" {
+		t.Errorf("issuer = %q", body.Issuer)
+	}
+	if body.SpBinding != authentik.SpBindingRedirect {
+		t.Errorf("sp_binding = %q, want redirect", body.SpBinding)
+	}
+	if body.SigningKp != "cert-1" {
+		t.Errorf("signing_kp = %q, want cert-1", body.SigningKp)
+	}
+	// Managed defaults (pm-email, pm-name) ALWAYS attached, plus the named extra.
+	want := map[string]bool{"pm-email": true, "pm-name": true, "pm-roles": true}
+	if len(body.PropertyMappings) != 3 {
+		t.Fatalf("property_mappings = %v, want 3 (two managed defaults + one extra)", body.PropertyMappings)
+	}
+	for _, pk := range body.PropertyMappings {
+		if !want[pk] {
+			t.Errorf("unexpected property mapping pk %q", pk)
+		}
+		delete(want, pk)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing property mappings: %v", want)
+	}
+}
+
+func TestReconcileSAMLPatchWhenExists(t *testing.T) {
+	f := newFake().withFlows().withSAMLDefaults()
+	f.samlByName["kimai (aboard)"] = &authentik.SAMLProvider{PK: 77, Name: "kimai (aboard)"}
+
+	r := New(f, testConfig(), fixedResolver("unused"))
+	if _, err := r.Reconcile(context.Background(), baseSAMLSpec()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if f.called("CreateSAMLProvider") {
+		t.Error("an existing SAML provider must be patched, not recreated")
+	}
+	if _, ok := f.patchedSAML[77]; !ok {
+		t.Error("expected a PATCH against the existing provider pk 77")
+	}
+}
+
+func TestReconcileSAMLMissingMappingError(t *testing.T) {
+	f := newFake().withFlows().withSAMLDefaults()
+	s := baseSAMLSpec()
+	s.SAML.Mappings = []string{"Does Not Exist"}
+
+	r := New(f, testConfig(), fixedResolver("unused"))
+	_, err := r.Reconcile(context.Background(), s)
+	if errCode(err) != CodeSAMLMappingMissing {
+		t.Fatalf("err code = %q, want %q", errCode(err), CodeSAMLMappingMissing)
+	}
+	if f.called("CreateSAMLProvider") {
+		t.Error("a missing property mapping must be rejected before any provider is written")
+	}
+}
+
+func TestReconcileSAMLAdoptTypeChangeRefused(t *testing.T) {
+	// An app owned by an aboard SAML provider, where the label now asks for
+	// forward-auth, is a provider-type change and must be refused. This proves
+	// SAML is a first-class third type in ownership resolution.
+	f := newFake().withFlows().withEmbedded()
+	f.groups["g-admins"] = &authentik.Group{PK: "grp-admins", Name: "g-admins"}
+	f.samlByName["whoami (aboard)"] = &authentik.SAMLProvider{PK: 80, Name: "whoami (aboard)"}
+	f.appBySlug["whoami"] = &authentik.Application{PK: "app-whoami", Slug: "whoami", Provider: intPtr(80), Name: "whoami", PolicyEngineMode: "any"}
+
+	s := baseForwardSpec()
+	s.Adopt = true // even the affirmation must not allow a type change
+
+	r := New(f, testConfig(), fixedResolver("unused"))
+	_, err := r.Reconcile(context.Background(), s)
+	if errCode(err) != CodeAdoptTypeChange {
+		t.Fatalf("err code = %q, want %q", errCode(err), CodeAdoptTypeChange)
+	}
+}
+
+func TestReconcileSAMLAdoptHandMadeTypeChangeRefused(t *testing.T) {
+	// A hand-made SAML provider (not aboard-named) where the label asks for SAML
+	// is fine, but where it asks for OIDC is a type change refused via the by-pk
+	// component lookup (ak-provider-saml-form).
+	f := newFake().withFlows().withSAMLDefaults()
+	f.appBySlug["kimai"] = &authentik.Application{PK: "app-kimai", Slug: "kimai", Provider: intPtr(90), Name: "Kimai", PolicyEngineMode: "any"}
+	f.providerRefByPK[90] = &authentik.ProviderRef{PK: 90, Name: "Kimai SAML", Component: authentik.ComponentSAMLProvider}
+
+	s := spec.Spec{
+		Enable: true, Name: "kimai", Slug: "kimai", Title: "Kimai",
+		Provider: spec.ProviderOIDC, Host: "kimai.example.com", Require: spec.RequireAny,
+		Groups: []string{"g-admins"}, GroupsSet: true,
+		OIDC: spec.OIDCSpec{Redirect: []string{"https://kimai/cb"}, SecretName: "s", ClientKind: spec.ClientConfidential},
+	}
+	s.Adopt = true
+
+	r := New(f, testConfig(), fixedResolver("0123456789012345678901234567890123456789"))
+	_, err := r.Reconcile(context.Background(), s)
+	if errCode(err) != CodeAdoptTypeChange {
+		t.Fatalf("err code = %q, want %q", errCode(err), CodeAdoptTypeChange)
+	}
+}
+
+func TestReconcileSAMLAdoptHandMadeInPlace(t *testing.T) {
+	// A hand-made SAML provider adopted in place: the app points at it, the label
+	// asks for SAML, and reconcile is a no-op beyond the marker rename, so it is
+	// adopted silently and the provider is PATCHed in place (renamed), not
+	// recreated.
+	f := newFake().withFlows().withSAMLDefaults()
+	f.appBySlug["kimai"] = &authentik.Application{PK: "app-kimai", Slug: "kimai", Provider: intPtr(90), Name: "Kimai", PolicyEngineMode: "any"}
+	f.providerRefByPK[90] = &authentik.ProviderRef{PK: 90, Name: "Kimai hand-made", Component: authentik.ComponentSAMLProvider}
+	f.bindings["app-kimai"] = []authentik.PolicyBinding{{PK: "b1", Group: strPtr("grp-admins"), Target: "app-kimai"}}
+
+	r := New(f, testConfig(), fixedResolver("unused"))
+	res, err := r.Reconcile(context.Background(), baseSAMLSpec())
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if !res.Adopted {
+		t.Error("a no-op-beyond-marker adoption should be silent and adopted")
+	}
+	if f.called("CreateSAMLProvider") {
+		t.Error("adoption must PATCH the pre-existing provider in place, not create a new one")
+	}
+	if _, ok := f.patchedSAML[90]; !ok {
+		t.Error("expected the hand-made provider pk 90 to be renamed in place via PATCH")
+	}
+}
+
 func TestReconcileOIDCSecretTooShortRejected(t *testing.T) {
 	f := newFake().withFlows()
 	f.groups["g-admins"] = &authentik.Group{PK: "grp-admins", Name: "g-admins"}

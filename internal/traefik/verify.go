@@ -107,12 +107,12 @@ func Verify(cfg *config.Config, sp *spec.Spec, labels map[string]string, fleetCa
 		return res
 	}
 
-	// OIDC has no Traefik half: the forward-auth middleware and the outpost
-	// callback are a proxy-provider concern, and the verifier is not applied to
-	// OIDC providers (grammar worked example d).
+	// A server-served provider has no Traefik half: the forward-auth middleware
+	// and the outpost callback are a proxy-provider concern, and the verifier is
+	// not applied to OIDC or SAML providers (grammar worked example d).
 	if sp.Provider != spec.ProviderForwardAuth {
 		res.Skipped = true
-		res.Reason = fmt.Sprintf("provider is %q: OIDC has no Traefik forward-auth half to verify", sp.Provider)
+		res.Reason = fmt.Sprintf("provider is %q: a server-served provider has no Traefik forward-auth half to verify", sp.Provider)
 		return res
 	}
 

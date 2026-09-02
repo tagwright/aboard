@@ -108,17 +108,24 @@ func Discover(cfg *config.Config, in Input) (spec.Spec, []Issue) {
 	// Adopt (Fork 9).
 	sp.Adopt = norm["adopt"] == "true"
 
-	// Host (Fork 3): explicit wins, else infer from the Traefik router rules.
-	if host, ok := norm["host"]; ok {
-		if iss := validateExplicitHost(host); iss != nil {
+	// Host (Fork 3): explicit wins, else infer from the Traefik router rules. A
+	// SAML provider is server-served and has no Traefik half, so it needs no host
+	// (there is no external_host and nothing to verify), and host inference is
+	// skipped for it rather than failing a SAML container that carries no Traefik
+	// router labels. An explicit aboard.host under saml is tolerated and ignored,
+	// the same latitude OIDC has.
+	if sp.Provider != spec.ProviderSAML {
+		if host, ok := norm["host"]; ok {
+			if iss := validateExplicitHost(host); iss != nil {
+				issues = append(issues, *iss)
+			} else {
+				sp.Host = host
+			}
+		} else if host, iss := inferHost(in.Labels); iss != nil {
 			issues = append(issues, *iss)
 		} else {
 			sp.Host = host
 		}
-	} else if host, iss := inferHost(in.Labels); iss != nil {
-		issues = append(issues, *iss)
-	} else {
-		sp.Host = host
 	}
 
 	// Access (Fork 5).
@@ -130,6 +137,7 @@ func Discover(cfg *config.Config, in Input) (spec.Spec, []Issue) {
 	// Typed sub-namespaces and their cross-field rules.
 	parseForwardAuth(cfg, p, &sp, &issues)
 	parseOIDC(p, &sp, &issues)
+	parseSAML(p, &sp, &issues)
 
 	return sp, issues
 }
@@ -160,10 +168,9 @@ func declaredButUnarmed(norm map[string]string) bool {
 	return false
 }
 
-// parseProvider resolves the aboard.provider enum (Fork 1). saml is a loud
-// error, reserved in v1 and never a silent downgrade. Any other unrecognized
-// value is an error. The returned bool reports whether the value is one of the
-// two v1-reconcilable types (forwardauth, oidc), which gates the typed
+// parseProvider resolves the aboard.provider enum (Fork 1). Any unrecognized
+// value is a loud error, never a silent downgrade. The returned bool reports
+// whether the value is a recognized reconcilable type, which gates the typed
 // sub-namespace cross-checks.
 func parseProvider(val string, issues *[]Issue) (spec.ProviderType, bool) {
 	switch val {
@@ -172,12 +179,10 @@ func parseProvider(val string, issues *[]Issue) (spec.ProviderType, bool) {
 	case string(spec.ProviderOIDC):
 		return spec.ProviderOIDC, true
 	case string(spec.ProviderSAML):
-		*issues = append(*issues, Issue{SeverityError, CodeSAMLReserved,
-			"aboard.provider=saml is reserved and not supported in v1"})
-		return spec.ProviderSAML, false
+		return spec.ProviderSAML, true
 	default:
 		*issues = append(*issues, Issue{SeverityError, CodeProviderInvalid,
-			fmt.Sprintf("aboard.provider %q is not a valid provider (want forwardauth or oidc)", val)})
+			fmt.Sprintf("aboard.provider %q is not a valid provider (want forwardauth, oidc, or saml)", val)})
 		return spec.ProviderForwardAuth, false
 	}
 }
@@ -312,6 +317,51 @@ func parseOIDC(p *parse, sp *spec.Spec, issues *[]Issue) {
 			*issues = append(*issues, Issue{SeverityError, CodeOIDCSecretForbidden,
 				"aboard.oidc.secret is forbidden for a public OIDC client"})
 		}
+	}
+}
+
+// parseSAML fills the SAML sub-namespace and enforces its cross-field rules:
+// every SAML key is an error under any other provider type, the ACS URL is
+// required and must be an absolute URL, and the binding is a closed post/redirect
+// enum. Audience and issuer are recorded verbatim, unvalidated: an SP entity ID
+// is commonly a URI but may be a URN, so aboard does not force a URL shape on
+// them. SAML carries no secret-shaped field.
+func parseSAML(p *parse, sp *spec.Spec, issues *[]Issue) {
+	isSAML := sp.Provider == spec.ProviderSAML
+	if !isSAML && len(p.samlKeys) > 0 {
+		*issues = append(*issues, Issue{SeverityError, CodeWrongProvider,
+			fmt.Sprintf("SAML labels (%s) are set but aboard.provider is %q",
+				strings.Join(p.samlKeys, ", "), sp.Provider)})
+	}
+
+	sp.SAML.ACSUrl = p.samlACS
+	sp.SAML.Audience = p.samlAudience
+	sp.SAML.Issuer = p.samlIssuer
+	sp.SAML.Mappings = splitCSV(p.samlMappings)
+
+	// Binding (default post).
+	binding := spec.SAMLBindingPost
+	switch p.samlBinding {
+	case "", string(spec.SAMLBindingPost):
+		binding = spec.SAMLBindingPost
+	case string(spec.SAMLBindingRedirect):
+		binding = spec.SAMLBindingRedirect
+	default:
+		*issues = append(*issues, Issue{SeverityError, CodeSAMLBindingInvalid,
+			fmt.Sprintf("aboard.saml.binding %q must be post or redirect", p.samlBinding)})
+	}
+	sp.SAML.Binding = binding
+
+	// The remaining rules only make sense for an actual SAML provider.
+	if !isSAML {
+		return
+	}
+	if p.samlACS == "" {
+		*issues = append(*issues, Issue{SeverityError, CodeSAMLACSMissing,
+			"aboard.saml.acs is required for a SAML provider"})
+	} else if !isAbsoluteURL(p.samlACS) {
+		*issues = append(*issues, Issue{SeverityError, CodeSAMLACSInvalid,
+			fmt.Sprintf("aboard.saml.acs %q is not an absolute URL", p.samlACS)})
 	}
 }
 

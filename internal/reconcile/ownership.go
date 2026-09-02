@@ -43,6 +43,8 @@ func providerKindFromComponent(component string) spec.ProviderType {
 		return spec.ProviderForwardAuth
 	case authentik.ComponentOAuth2Provider:
 		return spec.ProviderOIDC
+	case authentik.ComponentSAMLProvider:
+		return spec.ProviderSAML
 	default:
 		return ""
 	}
@@ -87,6 +89,16 @@ func (r *Reconciler) resolveOwnership(ctx context.Context, app authentik.Applica
 	}
 	if proxy != nil && proxy.PK == *app.Provider {
 		return ownership{owned: true, kind: spec.ProviderForwardAuth, providerPK: proxy.PK}, nil
+	}
+
+	// SAML is a clean, disjoint type: it is NOT an OAuth2Provider subclass, so it
+	// never appears on the proxy or oauth2 endpoints and is resolved on its own.
+	saml, err := r.api.GetSAMLProviderByName(ctx, name)
+	if err != nil && !errors.Is(err, authentik.ErrNotFound) {
+		return ownership{}, err
+	}
+	if saml != nil && saml.PK == *app.Provider {
+		return ownership{owned: true, kind: spec.ProviderSAML, providerPK: saml.PK}, nil
 	}
 
 	oauth, err := r.api.GetOAuth2ProviderByName(ctx, name)

@@ -89,6 +89,42 @@ func TestTeardownRefusesHandMade(t *testing.T) {
 	}
 }
 
+func TestTeardownSAMLNoOutpost(t *testing.T) {
+	f := newFake().withEmbedded()
+	f.samlByName["kimai (aboard)"] = &authentik.SAMLProvider{PK: 6, Name: "kimai (aboard)"}
+	f.appBySlug["kimai"] = &authentik.Application{PK: "app-kimai", Slug: "kimai", Provider: intPtr(6)}
+
+	r := New(f, testConfig(), fixedResolver("unused"))
+	if err := r.Teardown(context.Background(), "kimai"); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+	// SAML is server-served: no outpost detach.
+	if f.called("PatchOutpostProviders") {
+		t.Error("SAML teardown has no outpost step")
+	}
+	if len(f.deletedSAMLPKs) != 1 || f.deletedSAMLPKs[0] != 6 {
+		t.Errorf("deleted saml pks = %v, want [6]", f.deletedSAMLPKs)
+	}
+	if len(f.deletedApps) != 1 || f.deletedApps[0] != "kimai" {
+		t.Errorf("deleted apps = %v, want [kimai]", f.deletedApps)
+	}
+}
+
+func TestOrphansSAMLKind(t *testing.T) {
+	f := newFake()
+	f.samlByName["kimai (aboard)"] = &authentik.SAMLProvider{PK: 7, Name: "kimai (aboard)"}
+	f.apps = []authentik.Application{{PK: "app-kimai", Slug: "kimai", Provider: intPtr(7)}}
+
+	r := New(f, testConfig(), fixedResolver("unused"))
+	orphans, err := r.Orphans(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Orphans: %v", err)
+	}
+	if len(orphans) != 1 || orphans[0].Kind != spec.ProviderSAML {
+		t.Fatalf("orphans = %+v, want one SAML orphan", orphans)
+	}
+}
+
 func TestTeardownOIDCNoOutpost(t *testing.T) {
 	f := newFake().withEmbedded()
 	f.oauthByName["gitea (aboard)"] = &authentik.OAuth2Provider{PK: 5, Name: "gitea (aboard)"}
