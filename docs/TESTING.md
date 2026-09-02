@@ -128,6 +128,17 @@ Each of these was driven with the real `aboard` binary against the real
    auth path for a protected host, which is what the verifier's mixed-host rule
    depends on.
 
+10. **SAML.** A labeled `provider=saml` container (`aboard.saml.acs`,
+   `aboard.saml.audience`, `aboard.groups`) reconciles to a `<slug> (aboard)`
+   SAMLProvider with the ACS URL, `sp_binding post`, the resolved signing keypair,
+   `sign_assertion true`, and the seven managed default attribute mappings
+   attached, linked to an Application group-bound to the labeled group. The
+   provider is NOT added to the embedded outpost's providers list (SAML is
+   server-served, it has no outpost half), confirmed by reading the list back.
+   `GET /api/v3/providers/saml/{pk}/metadata/` returns HTTP 200 and a valid
+   `EntityDescriptor` IdP metadata document. A second reconcile is a clean no-op:
+   the provider pk is stable, still one provider, one binding, `sticky=0`.
+
 ## The adoption empirical result (must-verify)
 
 The architecture flagged that adoption's create-a-marked-provider-and-repoint
@@ -190,6 +201,17 @@ Authentik.
   rejected by Authentik's proxy validator). Reworked to the in-place rename
   described above.
 
+- **SAML create was rejected for an unsigned response.** aboard always resolves a
+  signing keypair for a SAML provider, and Authentik enforces that when a signing
+  keypair is set at least one of `sign_assertion` / `sign_response` must be true.
+  The first POST set `signing_kp` but neither flag (the request omitted them and
+  the model default did not apply through the serializer), so Authentik returned a
+  400 "With a signing keypair selected, at least one of 'Sign assertion' and
+  'Sign Response' must be selected." Fixed by having the reconciler always send
+  `sign_assertion true` (Authentik's own model default, and what SPs most commonly
+  verify), a security-relevant field aboard now manages explicitly rather than
+  leaving to a server default.
+
 ## What is PARTIAL
 
 - **OIDC adoption in place** is covered by the reconciler's code path (symmetric
@@ -209,8 +231,10 @@ Authentik.
   belongs to a real deployment; the Traefik verifier's correctness against a
   live fleet is the remaining unproven link.
 
-- **The `saml` reserved rejection, multi-page listings at fleet scale, and
-  Podman** were not exercised here.
+- **Multi-page listings at fleet scale, and Podman** were not exercised here.
+  SAML is now proven end-to-end (step 10); the one SAML-side residual is the same
+  as OIDC's, that finishing the integration still needs the ACS URL and entity ID
+  configured on the SP by hand, which lives outside Authentik and outside aboard.
 
 ## Running the harness
 

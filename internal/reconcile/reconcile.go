@@ -625,7 +625,12 @@ func (r *Reconciler) convergeSAMLProvider(ctx context.Context, res *Result, s sp
 		Issuer:            s.SAML.Issuer,
 		SpBinding:         binding,
 		SigningKp:         signingKey,
-		PropertyMappings:  mappingPKs,
+		// A signing keypair is always resolved, and Authentik requires at least one
+		// sign flag when one is set. aboard signs the assertion (Authentik's own
+		// model default), which is what SPs most commonly verify.
+		SignAssertion:    boolPtr(true),
+		SignResponse:     boolPtr(false),
+		PropertyMappings: mappingPKs,
 	}
 
 	// Adoption: PATCH the pre-existing SAML provider the app points at, in place,
