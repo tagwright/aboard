@@ -89,7 +89,13 @@ func (c *Client) ListApplications(ctx context.Context, pageSize int) ([]Applicat
 			return nil, err
 		}
 		all = append(all, resp.Results...)
-		if resp.Pagination.Next == nil {
+		// On Authentik 2025.6.4 the pagination "next" field is a page NUMBER that
+		// is 0 (not null) on the last page, verified against the live API. So a
+		// non-nil Next is not by itself "there is another page": the walk stops
+		// unless Next names a page strictly beyond the current one. Treating 0 as
+		// "keep going" is exactly what made this loop request page 0 and get a 404
+		// "Invalid page." from Django REST.
+		if resp.Pagination.Next == nil || *resp.Pagination.Next <= page {
 			break
 		}
 		page = *resp.Pagination.Next

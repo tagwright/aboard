@@ -40,8 +40,12 @@ const (
 )
 
 // Pagination is the wrapper metadata on every list response. next and previous
-// are page NUMBERS on this Authentik version, not URLs, so a nil Next means the
-// current page is the last one.
+// are page NUMBERS on this Authentik version, not URLs. Verified against the
+// live 2025.6.4 API: on the LAST page next is 0, not null (and previous is 0 on
+// the first page), so "no next page" is next == nil OR a next that does not name
+// a page strictly beyond the current one. A paginated walk must test the page
+// number, not merely non-nil-ness, or it will request page 0 and get a 404
+// "Invalid page." See ListApplications.
 type Pagination struct {
 	Next     *int `json:"next"`
 	Previous *int `json:"previous"`
