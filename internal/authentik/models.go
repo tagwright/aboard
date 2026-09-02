@@ -80,6 +80,15 @@ type ApplicationRequest struct {
 	MetaDescription  string `json:"meta_description,omitempty"`
 }
 
+// FilePathRequest is the JSON body of the set_icon_url action, a single url
+// (verified against the schema's FilePathRequest, which requires url). It is how
+// aboard sets an application's library icon: meta_icon is read-only on
+// ApplicationRequest, so a normal PATCH cannot set it, and unlike the multipart
+// set_icon action this one takes a plain JSON url.
+type FilePathRequest struct {
+	URL string `json:"url"`
+}
+
 // ProxyProvider is a proxy (forward-auth) provider. pk is an integer. aboard
 // creates it in mode forward_single.
 type ProxyProvider struct {
