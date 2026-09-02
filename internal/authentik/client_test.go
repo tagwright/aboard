@@ -468,6 +468,46 @@ func TestListApplicationsFollowsPagination(t *testing.T) {
 	}
 }
 
+func TestGetApplicationBySlugRequestsFullList(t *testing.T) {
+	var cap capture
+	resp := `{"pagination":{"next":0,"previous":0,"count":1},"results":[{"pk":"app-uuid","slug":"wiki","name":"Wiki","provider":7}]}`
+	cli := newTestClient(t, &cap, 200, resp)
+
+	app, err := cli.GetApplicationBySlug(context.Background(), "wiki")
+	if err != nil {
+		t.Fatalf("GetApplicationBySlug: %v", err)
+	}
+	if app.Slug != "wiki" {
+		t.Errorf("slug = %q", app.Slug)
+	}
+	// The access-filter escape hatch must be on the query, or the endpoint hides
+	// applications whose policy the token's user does not pass.
+	if !strings.Contains(cap.query, "superuser_full_list=true") {
+		t.Errorf("query = %q, want superuser_full_list=true", cap.query)
+	}
+	if !strings.Contains(cap.query, "slug=wiki") {
+		t.Errorf("query = %q, want slug=wiki", cap.query)
+	}
+}
+
+func TestListApplicationsRequestsFullList(t *testing.T) {
+	var lastQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lastQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"pagination":{"next":0,"previous":0,"count":1},"results":[{"pk":"a","slug":"one"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	cli := New(srv.URL, testToken)
+
+	if _, err := cli.ListApplications(context.Background(), 50); err != nil {
+		t.Fatalf("ListApplications: %v", err)
+	}
+	if !strings.Contains(lastQuery, "superuser_full_list=true") {
+		t.Errorf("query = %q, want superuser_full_list=true", lastQuery)
+	}
+}
+
 func TestListApplicationsStopsOnZeroNext(t *testing.T) {
 	// The real Authentik 2025.6.4 API returns "next": 0 (not null) on the last
 	// page. A walk that treats a non-nil next as "there is another page" would
