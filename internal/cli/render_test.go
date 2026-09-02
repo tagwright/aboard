@@ -99,3 +99,58 @@ func TestRunRenderSetup_EmitsMiddlewareAndCatchAll(t *testing.T) {
 		t.Errorf("expected a HostRegexp catch-all rule, got:\n%s", out)
 	}
 }
+
+// TestRunRenderBlueprint_CollectsGroupsAndScope proves --blueprint emits the
+// identity blueprint: a group entry per distinct group across the enabled fleet
+// (explicit labels plus the fleet default), and the OIDC groups scope mapping.
+func TestRunRenderBlueprint_CollectsGroupsAndScope(t *testing.T) {
+	cfg := testConfig()
+	cfg.Defaults.Groups = []string{"public-users"}
+
+	l := &fakeLister{containers: []runtime.Container{
+		container("grp", map[string]string{
+			"aboard.enable": "true",
+			"aboard.host":   "grp.example.com",
+			"aboard.groups": "nutrition-users, staff",
+		}),
+		// Disabled container: its group must NOT be collected.
+		container("off", map[string]string{
+			"aboard.groups": "should-not-appear",
+		}),
+		// Authentik's own container must be self-excluded.
+		selfExcludedContainer(),
+	}}
+
+	u, buf := newTestUI()
+	if err := runRenderBlueprint(context.Background(), cfg, l, u); err != nil {
+		t.Fatalf("runRenderBlueprint: %v", err)
+	}
+	out := buf.String()
+
+	for _, want := range []string{
+		"version: 1",
+		"blueprints.goauthentik.io/instantiate",
+		"authentik_core.group",
+		"nutrition-users",
+		"staff",
+		"public-users",
+		"authentik_providers_oauth2.scopemapping",
+		"scope_name:",
+		"request.user.ak_groups.all()",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("blueprint output missing %q, got:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "should-not-appear") {
+		t.Errorf("a disabled container's group must not be collected, got:\n%s", out)
+	}
+}
+
+// selfExcludedContainer is the Authentik server container, which the blueprint
+// collection must skip via the shared self-exclusion.
+func selfExcludedContainer() runtime.Container {
+	c := container("authentik-server", map[string]string{"aboard.enable": "true", "aboard.groups": "idp-only"})
+	c.Image = "ghcr.io/goauthentik/server:2025.6.4"
+	return c
+}
