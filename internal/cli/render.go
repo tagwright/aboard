@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/tagwright/aboard/internal/blueprint"
 	"github.com/tagwright/aboard/internal/config"
 	"github.com/tagwright/aboard/internal/daemon"
 	"github.com/tagwright/aboard/internal/discovery"
@@ -24,26 +25,33 @@ import (
 // block. With --setup it prints the once-per-fleet shared middleware definition
 // and the recommended fleet catch-all callback router.
 func newRenderCmd() *cobra.Command {
-	var setup bool
+	var setup, blueprintFlag bool
 
 	cmd := &cobra.Command{
 		Use:   "render [service]",
-		Short: "Print the Traefik labels for a service, or --setup for the fleet pieces",
-		Long: `render prints the Traefik labels aboard recommends. It writes nothing:
-aboard never edits Traefik configuration, these are for you to paste.
+		Short: "Print the Traefik labels for a service, --setup for the fleet pieces, or --blueprint for the identity IaC",
+		Long: `render prints the config aboard recommends. It writes nothing: aboard never
+edits Traefik configuration or Authentik identity objects, these are for you.
 
-  aboard render <service>   the middleware line and, on a mixed host, the
-                            outpost callback router for one service
-  aboard render --setup     the once-per-fleet shared forward-auth middleware
-                            definition and the fleet catch-all callback router`,
+  aboard render <service>    the middleware line and, on a mixed host, the
+                             outpost callback router for one service
+  aboard render --setup      the once-per-fleet shared forward-auth middleware
+                             definition and the fleet catch-all callback router
+  aboard render --blueprint  an Authentik blueprint defining the groups your
+                             labels bind and the OIDC groups scope mapping,
+                             the identity-layer objects aboard references by
+                             name but never creates`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if setup {
+			if setup && blueprintFlag {
+				return fmt.Errorf("render takes at most one of --setup or --blueprint")
+			}
+			if setup || blueprintFlag {
 				if len(args) != 0 {
-					return fmt.Errorf("render --setup takes no service argument")
+					return fmt.Errorf("render --setup / --blueprint takes no service argument")
 				}
 			} else if len(args) != 1 {
-				return fmt.Errorf("render requires exactly one <service> argument, or --setup")
+				return fmt.Errorf("render requires exactly one <service> argument, or --setup / --blueprint")
 			}
 
 			cfg, err := loadConfig()
@@ -59,12 +67,48 @@ aboard never edits Traefik configuration, these are for you to paste.
 
 			rt := newRuntime()
 			defer rt.Close()
+			if blueprintFlag {
+				return runRenderBlueprint(cmd.Context(), cfg, rt, u)
+			}
 			return runRenderService(cmd.Context(), cfg, rt, args[0], u)
 		},
 	}
 
 	cmd.Flags().BoolVar(&setup, "setup", false, "print the once-per-fleet Traefik pieces instead of a single service")
+	cmd.Flags().BoolVar(&blueprintFlag, "blueprint", false, "print the Authentik identity blueprint (groups + the OIDC groups scope mapping)")
 	return cmd
+}
+
+// runRenderBlueprint collects every distinct group the enabled fleet binds (the
+// explicit aboard.groups labels plus the fleet default defaults.groups) and emits
+// the Authentik blueprint that defines those groups and the OIDC groups scope
+// mapping. It is the identity-layer analog of runRenderService: it lists
+// containers and discovers each, but touches no Authentik and writes nothing.
+func runRenderBlueprint(ctx context.Context, cfg *config.Config, lister containerLister, u ui) error {
+	containers, err := lister.List(ctx)
+	if err != nil {
+		return err
+	}
+
+	var groups []string
+	groups = append(groups, cfg.Defaults.Groups...)
+	for _, c := range containers {
+		if daemon.IsSelfExcluded(c) {
+			continue
+		}
+		sp, _ := discovery.Discover(cfg, daemon.InputFrom(c))
+		if !sp.Enable {
+			continue
+		}
+		groups = append(groups, sp.Groups...)
+	}
+
+	scope := cfg.OIDC.GroupsScope
+	if scope == "" {
+		scope = config.DefaultGroupsScope
+	}
+	u.print(blueprint.Render(groups, scope))
+	return nil
 }
 
 // runRenderSetup prints the once-per-fleet Traefik pieces. Pure output.
