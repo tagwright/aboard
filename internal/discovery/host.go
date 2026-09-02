@@ -11,24 +11,13 @@ package discovery
 
 import (
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 )
 
-// hostLiteralRe matches a Traefik literal Host() matcher and captures the
-// backtick-quoted hostname. A rule may combine Host(`h`) with && PathPrefix(...)
-// and other matchers, so this pulls only the Host() literal and ignores the
-// rest. Traefik quotes matcher arguments in backticks.
-var hostLiteralRe = regexp.MustCompile("Host\\(`([^`]*)`\\)")
-
-// hostRegexpRe detects a HostRegexp() or HostSNI() matcher, whose argument is
-// not a single literal host and so makes inference impossible.
-var hostRegexpRe = regexp.MustCompile(`Host(Regexp|SNI)\(`)
-
-// traefikRuleRe matches the router-rule label keys whose values inference
-// scans: traefik.http.routers.<name>.rule.
-var traefikRuleRe = regexp.MustCompile(`^traefik\.http\.routers\.[^.]+\.rule$`)
+// The Traefik router-rule matchers this file reads (hostLiteralRe,
+// hostRegexpRe, traefikRuleRe) live in rule.go, exported as HostLiterals,
+// RuleHasHostRegexp, and IsRouterRuleKey, so the Traefik verifier reuses them.
 
 // validateExplicitHost checks an explicit aboard.host is a BARE hostname: no
 // scheme, no path, no port, no whitespace. aboard composes https:// in front, so
@@ -62,7 +51,7 @@ func inferHost(labels map[string]string) (string, *Issue) {
 	// deterministic.
 	keys := make([]string, 0, len(labels))
 	for k := range labels {
-		if traefikRuleRe.MatchString(k) {
+		if IsRouterRuleKey(k) {
 			keys = append(keys, k)
 		}
 	}
@@ -70,12 +59,11 @@ func inferHost(labels map[string]string) (string, *Issue) {
 
 	for _, k := range keys {
 		rule := labels[k]
-		if hostRegexpRe.MatchString(rule) {
+		if RuleHasHostRegexp(rule) {
 			regexpSeen = true
 		}
-		for _, m := range hostLiteralRe.FindAllStringSubmatch(rule, -1) {
-			h := m[1]
-			if h != "" && !seen[h] {
+		for _, h := range HostLiterals(rule) {
+			if !seen[h] {
 				seen[h] = true
 				distinct = append(distinct, h)
 			}
