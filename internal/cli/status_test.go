@@ -27,7 +27,7 @@ func TestRunStatus_ReportsAppsAndOrphans(t *testing.T) {
 		}),
 	}}
 	rec := &fakeReconciler{orphans: []reconcile.Orphan{
-		{Slug: "grafana", Kind: spec.ProviderOIDC, ProviderPK: 7, AppPK: "app-grafana"},
+		{Slug: "grafana", Kind: spec.ProviderOIDC, ProviderPK: 7},
 	}}
 
 	u, buf := newTestUI()
@@ -61,7 +61,7 @@ func TestRunStatus_SAMLMetadataAndOrphan(t *testing.T) {
 		}),
 	}}
 	rec := &fakeReconciler{orphans: []reconcile.Orphan{
-		{Slug: "oldsaml", Kind: spec.ProviderSAML, ProviderPK: 9, AppPK: "app-oldsaml"},
+		{Slug: "oldsaml", Kind: spec.ProviderSAML, ProviderPK: 9},
 	}}
 
 	u, buf := newTestUI()

@@ -65,13 +65,17 @@ type API interface {
 	GetSAMLPropertyMappings(ctx context.Context) ([]string, error)
 	GetSAMLPropertyMappingByName(ctx context.Context, name string) (*authentik.SAMLPropertyMapping, error)
 
-	// Application convergence, listing (orphans), teardown, and the icon action.
+	// Application convergence, teardown, and the icon action.
 	GetApplicationBySlug(ctx context.Context, slug string) (*authentik.Application, error)
 	CreateApplication(ctx context.Context, body authentik.ApplicationRequest) (*authentik.Application, error)
 	PatchApplication(ctx context.Context, slug string, body authentik.ApplicationRequest) (*authentik.Application, error)
 	DeleteApplication(ctx context.Context, slug string) error
-	ListApplications(ctx context.Context, pageSize int) ([]authentik.Application, error)
 	SetApplicationIconURL(ctx context.Context, slug, iconURL string) error
+
+	// Provider enumeration for the orphan scan: the polymorphic /providers/all/
+	// list, NOT access-filtered, so a non-superuser scoped token sees every
+	// aboard-owned provider (and each carries its assigned application slug).
+	ListAllProviders(ctx context.Context, pageSize int) ([]authentik.AllProvider, error)
 
 	// Strict binding ownership (step d).
 	ListBindingsForTarget(ctx context.Context, appPK string) ([]authentik.PolicyBinding, error)

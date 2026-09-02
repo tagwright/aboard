@@ -12,29 +12,35 @@ import (
 	"github.com/tagwright/aboard/internal/spec"
 )
 
-// orphanListPageSize is the page size for the full-fleet application listing the
-// orphan scan walks. A full listing is the one place a single-app filter would
+// orphanListPageSize is the page size for the full-fleet provider listing the
+// orphan scan walks. A full listing is the one place a single-item filter would
 // span pages (architecture, "Authentik REST client").
 const orphanListPageSize = 100
 
 // Orphan is an aboard-owned Authentik object with no matching enabled container
 // (Fork 8). It is surfaced in status and the daily digest, never deleted by
 // reconcile. Kind lets the digest list OIDC orphans (live credentials) first and
-// separately from harmless proxy ones.
+// separately from harmless proxy ones. Slug is the assigned application slug the
+// orphan is keyed on, empty for a dangling provider that has no application.
 type Orphan struct {
 	Slug       string
 	Kind       spec.ProviderType
 	ProviderPK int
-	AppPK      string
 }
 
-// Orphans returns the aboard-owned applications whose slug is not in
-// enabledSlugs. It lists every application, keeps only the aboard-owned ones
-// (the ownership marker is what makes this safe: a hand-made object is never an
-// orphan), and drops those still enabled. The result is ordered OIDC first, so a
-// caller rendering the digest surfaces live credentials before inert proxies.
+// Orphans returns the aboard-owned providers whose assigned application slug is
+// not in enabledSlugs. It enumerates the providers (the polymorphic
+// /providers/all/ list, which unlike the application list is NOT access-filtered,
+// so a non-superuser scoped token sees every owned provider) and keeps only the
+// aboard-owned ones, identified by the " (aboard)" name marker: a hand-made
+// object is never an orphan. Each owned provider is keyed on its
+// assigned_application_slug, and one whose slug is not still enabled is an orphan.
+// A provider with no application assigned (empty slug) is a dangling-provider
+// orphan, which the old application-keyed scan could not see at all. The result is
+// ordered OIDC first, so a caller rendering the digest surfaces live credentials
+// before inert proxies.
 func (r *Reconciler) Orphans(ctx context.Context, enabledSlugs []string) ([]Orphan, error) {
-	apps, err := r.api.ListApplications(ctx, orphanListPageSize)
+	provs, err := r.api.ListAllProviders(ctx, orphanListPageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -45,19 +51,17 @@ func (r *Reconciler) Orphans(ctx context.Context, enabledSlugs []string) ([]Orph
 	}
 
 	var orphans []Orphan
-	for _, app := range apps {
-		own, oerr := r.resolveOwnership(ctx, app)
-		if oerr != nil {
-			return nil, oerr
+	for _, p := range provs {
+		if !isAboardProviderName(p.Name) {
+			continue
 		}
-		if !own.owned || enabled[app.Slug] {
+		if p.AssignedApplicationSlug != "" && enabled[p.AssignedApplicationSlug] {
 			continue
 		}
 		orphans = append(orphans, Orphan{
-			Slug:       app.Slug,
-			Kind:       own.kind,
-			ProviderPK: own.providerPK,
-			AppPK:      app.PK,
+			Slug:       p.AssignedApplicationSlug,
+			Kind:       providerKindFromComponent(p.Component),
+			ProviderPK: p.PK,
 		})
 	}
 

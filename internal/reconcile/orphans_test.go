@@ -13,18 +13,19 @@ import (
 
 func TestOrphansOwnedAndNotEnabledOIDCFirst(t *testing.T) {
 	f := newFake()
-	// Owned forward-auth, not enabled -> orphan.
-	f.proxyByName["gone (aboard)"] = &authentik.ProxyProvider{PK: 1, Name: "gone (aboard)"}
-	// Owned OIDC, not enabled -> orphan, and a live credential, so listed first.
-	f.oauthByName["oidcgone (aboard)"] = &authentik.OAuth2Provider{PK: 2, Name: "oidcgone (aboard)"}
-	// Owned forward-auth, still enabled -> not an orphan.
-	f.proxyByName["live (aboard)"] = &authentik.ProxyProvider{PK: 3, Name: "live (aboard)"}
-
-	f.apps = []authentik.Application{
-		{PK: "app-gone", Slug: "gone", Provider: intPtr(1)},
-		{PK: "app-live", Slug: "live", Provider: intPtr(3)},
-		{PK: "app-hand", Slug: "hand", Provider: intPtr(99)}, // hand-made, never an orphan
-		{PK: "app-oidcgone", Slug: "oidcgone", Provider: intPtr(2)},
+	// The orphan scan enumerates the polymorphic provider list, keeps only the
+	// " (aboard)"-named ones, and keys each on its assigned application slug. Each
+	// provider appears ONCE here under its true component (a proxy provider is
+	// ak-provider-proxy-form, not the oauth2 subclass form).
+	f.allProviders = []authentik.AllProvider{
+		// Owned forward-auth, not enabled -> orphan.
+		{PK: 1, Name: "gone (aboard)", Component: authentik.ComponentProxyProvider, AssignedApplicationSlug: "gone"},
+		// Owned forward-auth, still enabled -> not an orphan.
+		{PK: 3, Name: "live (aboard)", Component: authentik.ComponentProxyProvider, AssignedApplicationSlug: "live"},
+		// Hand-made (no aboard marker) -> never an orphan.
+		{PK: 99, Name: "hand-rolled provider", Component: authentik.ComponentProxyProvider, AssignedApplicationSlug: "hand"},
+		// Owned OIDC, not enabled -> orphan, and a live credential, so listed first.
+		{PK: 2, Name: "oidcgone (aboard)", Component: authentik.ComponentOAuth2Provider, AssignedApplicationSlug: "oidcgone"},
 	}
 
 	r := New(f, testConfig(), fixedResolver("unused"))
@@ -40,6 +41,24 @@ func TestOrphansOwnedAndNotEnabledOIDCFirst(t *testing.T) {
 	}
 	if orphans[1].Slug != "gone" || orphans[1].Kind != spec.ProviderForwardAuth {
 		t.Errorf("second orphan = %+v, want gone (forwardauth)", orphans[1])
+	}
+}
+
+func TestOrphansDanglingProviderNoApplication(t *testing.T) {
+	f := newFake()
+	// An aboard-owned provider with no application assigned (empty slug) is a
+	// dangling-provider orphan, which the old application-keyed scan never saw.
+	f.allProviders = []authentik.AllProvider{
+		{PK: 5, Name: "dangling (aboard)", Component: authentik.ComponentOAuth2Provider, AssignedApplicationSlug: ""},
+	}
+
+	r := New(f, testConfig(), fixedResolver("unused"))
+	orphans, err := r.Orphans(context.Background(), []string{"live"})
+	if err != nil {
+		t.Fatalf("Orphans: %v", err)
+	}
+	if len(orphans) != 1 || orphans[0].ProviderPK != 5 || orphans[0].Slug != "" {
+		t.Fatalf("orphans = %+v, want one dangling orphan with empty slug", orphans)
 	}
 }
 
@@ -112,8 +131,9 @@ func TestTeardownSAMLNoOutpost(t *testing.T) {
 
 func TestOrphansSAMLKind(t *testing.T) {
 	f := newFake()
-	f.samlByName["kimai (aboard)"] = &authentik.SAMLProvider{PK: 7, Name: "kimai (aboard)"}
-	f.apps = []authentik.Application{{PK: "app-kimai", Slug: "kimai", Provider: intPtr(7)}}
+	f.allProviders = []authentik.AllProvider{
+		{PK: 7, Name: "kimai (aboard)", Component: authentik.ComponentSAMLProvider, AssignedApplicationSlug: "kimai"},
+	}
 
 	r := New(f, testConfig(), fixedResolver("unused"))
 	orphans, err := r.Orphans(context.Background(), nil)

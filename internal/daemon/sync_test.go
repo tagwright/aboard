@@ -42,8 +42,8 @@ func TestRemovalKeepsObjectsAsOrphans(t *testing.T) {
 
 	rec := &fakeReconciler{
 		orphans: []reconcile.Orphan{
-			{Slug: "gitea", Kind: spec.ProviderOIDC, ProviderPK: 7, AppPK: "app-gitea"},
-			{Slug: "whoami", Kind: spec.ProviderForwardAuth, ProviderPK: 3, AppPK: "app-whoami"},
+			{Slug: "gitea", Kind: spec.ProviderOIDC, ProviderPK: 7},
+			{Slug: "whoami", Kind: spec.ProviderForwardAuth, ProviderPK: 3},
 		},
 	}
 	d := newTestDaemon(t, rt, rec, &capturingNotifier{})
