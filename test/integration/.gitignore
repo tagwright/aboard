@@ -1,0 +1,3 @@
+# Throwaway harness artifacts: never commit the binary or the secret files.
+aboard-bin
+secrets/
