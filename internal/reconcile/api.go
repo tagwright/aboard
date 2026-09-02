@@ -44,6 +44,11 @@ type API interface {
 	PatchProxyProvider(ctx context.Context, pk int, body authentik.ProxyProviderRequest) (*authentik.ProxyProvider, error)
 	DeleteProxyProvider(ctx context.Context, pk int) error
 
+	// Provider type by pk, for adoption: the polymorphic detail route is the only
+	// type-accurate way to learn the type of the provider an application points
+	// at (the oauth2 list also returns proxy providers, a subclass).
+	GetProviderByPK(ctx context.Context, pk int) (*authentik.ProviderRef, error)
+
 	// OAuth2 (OIDC) provider convergence and teardown.
 	GetOAuth2ProviderByName(ctx context.Context, name string) (*authentik.OAuth2Provider, error)
 	CreateOAuth2Provider(ctx context.Context, body authentik.OAuth2ProviderRequest) (*authentik.OAuth2Provider, error)

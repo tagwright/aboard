@@ -5,6 +5,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/tagwright/aboard/internal/authentik"
@@ -36,6 +37,28 @@ func (r *Reconciler) adoptionGate(ctx context.Context, res *Result, s spec.Spec,
 		return r.fail(res, CodeAdoptTypeChange,
 			"application "+slug+" has an aboard "+string(own.kind)+" provider but the label asks for "+
 				string(s.Provider)+": a provider-type change is never adopted, do it deliberately in two steps")
+	}
+
+	// For a hand-made (non-aboard) provider, learn its actual TYPE by pk: a
+	// provider-type change (a hand-made OIDC provider where the label asks for
+	// forward-auth, or vice versa) is never adoptable, even with the affirmation.
+	// This is the type-accurate check the ownership marker alone cannot make,
+	// since the app points at a provider whose name is not aboard's. Without it,
+	// adoption would rename a wrong-type provider into the marker and the converge
+	// step would then push the wrong shape onto it. A provider that no longer
+	// resolves (ErrNotFound) is tolerated: convergence handles the missing case.
+	if !own.owned && app.Provider != nil {
+		ref, err := r.api.GetProviderByPK(ctx, *app.Provider)
+		if err != nil && !errors.Is(err, authentik.ErrNotFound) {
+			return r.fail(res, CodeAPI, "look up provider of application "+slug+": "+err.Error())
+		}
+		if ref != nil {
+			if k := providerKindFromComponent(ref.Component); k != "" && k != s.Provider {
+				return r.fail(res, CodeAdoptTypeChange,
+					"application "+slug+" points at a "+string(k)+" provider but the label asks for "+
+						string(s.Provider)+": a provider-type change is never adopted, do it deliberately in two steps")
+			}
+		}
 	}
 
 	var diffs []string

@@ -313,8 +313,9 @@ func TestReconcileOutpostReadModifyWriteKeepsForeign(t *testing.T) {
 func TestReconcileAdoptSilentNoop(t *testing.T) {
 	f := newFake().withFlows().withEmbedded()
 	f.groups["g-admins"] = &authentik.Group{PK: "grp-admins", Name: "g-admins"}
-	// Hand-made app matching the labels, pointing at a non-aboard provider.
+	// Hand-made app matching the labels, pointing at a non-aboard proxy provider.
 	f.appBySlug["whoami"] = &authentik.Application{PK: "app-whoami", Slug: "whoami", Provider: intPtr(50), Name: "whoami", PolicyEngineMode: "any"}
+	f.providerRefByPK[50] = &authentik.ProviderRef{PK: 50, Name: "whoami Provider", Component: authentik.ComponentProxyProvider}
 	f.bindings["app-whoami"] = []authentik.PolicyBinding{
 		{PK: "b1", Group: strPtr("grp-admins"), Target: "app-whoami"},
 	}
@@ -330,8 +331,48 @@ func TestReconcileAdoptSilentNoop(t *testing.T) {
 	if !hasIssue(res, discovery.SeverityInfo, CodeAdopted) {
 		t.Error("silent adoption emits an info issue")
 	}
-	if !f.called("CreateProxyProvider") || !f.called("PatchApplication") {
-		t.Error("adoption creates the aboard provider and repoints the app")
+	// Adoption renames the pre-existing provider IN PLACE rather than creating a
+	// duplicate and re-pointing: verified empirically that a create-and-repoint
+	// leaves an uncleanable orphan provider attached to the outpost.
+	if f.called("CreateProxyProvider") {
+		t.Error("adoption must not create a new provider; it renames the existing one in place")
+	}
+	if f.nextProviderPK != 0 {
+		t.Error("no new provider pk should be minted during an in-place adoption")
+	}
+	if !f.called("PatchProxyProvider") || !f.called("PatchApplication") {
+		t.Error("adoption renames the existing provider and updates the app")
+	}
+	if got := f.patchedProxy[50].Name; got != "whoami (aboard)" {
+		t.Errorf("renamed provider name = %q, want %q", got, "whoami (aboard)")
+	}
+	// The app must end up pointing at the SAME (renamed) provider pk 50, never a
+	// freshly created one.
+	if got := f.patchedApps["whoami"].Provider; got == nil || *got != 50 {
+		t.Errorf("app provider = %v, want the renamed provider pk 50", got)
+	}
+}
+
+func TestReconcileAdoptHandMadeTypeChangeRefused(t *testing.T) {
+	// A hand-made OIDC provider (not aboard-named) where the label asks for
+	// forward-auth is a provider-type change, and must be refused even with the
+	// affirmation. This is the gap the by-pk type lookup closes: the ownership
+	// marker alone cannot see the hand-made provider's type.
+	f := newFake().withFlows().withEmbedded()
+	f.groups["g-admins"] = &authentik.Group{PK: "grp-admins", Name: "g-admins"}
+	f.appBySlug["whoami"] = &authentik.Application{PK: "app-whoami", Slug: "whoami", Provider: intPtr(50), Name: "whoami", PolicyEngineMode: "any"}
+	f.providerRefByPK[50] = &authentik.ProviderRef{PK: 50, Name: "whoami OAuth", Component: authentik.ComponentOAuth2Provider}
+
+	s := baseForwardSpec()
+	s.Adopt = true // even the affirmation must not allow a type change
+
+	r := New(f, testConfig(), fixedResolver("unused"))
+	_, err := r.Reconcile(context.Background(), s)
+	if errCode(err) != CodeAdoptTypeChange {
+		t.Fatalf("err code = %q, want %q", errCode(err), CodeAdoptTypeChange)
+	}
+	if f.called("PatchProxyProvider") || f.called("CreateProxyProvider") || f.called("PatchApplication") {
+		t.Error("a refused type-change adoption must write nothing")
 	}
 }
 
@@ -340,6 +381,7 @@ func TestReconcileAdoptConflictWithoutAdopt(t *testing.T) {
 	f.groups["g-admins"] = &authentik.Group{PK: "grp-admins", Name: "g-admins"}
 	// Hand-made app whose title differs from the label.
 	f.appBySlug["whoami"] = &authentik.Application{PK: "app-whoami", Slug: "whoami", Provider: intPtr(50), Name: "Old Title", PolicyEngineMode: "any"}
+	f.providerRefByPK[50] = &authentik.ProviderRef{PK: 50, Name: "whoami Provider", Component: authentik.ComponentProxyProvider}
 	f.bindings["app-whoami"] = []authentik.PolicyBinding{{PK: "b1", Group: strPtr("grp-admins"), Target: "app-whoami"}}
 
 	s := baseForwardSpec()
@@ -362,6 +404,7 @@ func TestReconcileAdoptConflictClearedByAdopt(t *testing.T) {
 	f := newFake().withFlows().withEmbedded()
 	f.groups["g-admins"] = &authentik.Group{PK: "grp-admins", Name: "g-admins"}
 	f.appBySlug["whoami"] = &authentik.Application{PK: "app-whoami", Slug: "whoami", Provider: intPtr(50), Name: "Old Title", PolicyEngineMode: "any"}
+	f.providerRefByPK[50] = &authentik.ProviderRef{PK: 50, Name: "whoami Provider", Component: authentik.ComponentProxyProvider}
 	f.bindings["app-whoami"] = []authentik.PolicyBinding{{PK: "b1", Group: strPtr("grp-admins"), Target: "app-whoami"}}
 
 	s := baseForwardSpec()

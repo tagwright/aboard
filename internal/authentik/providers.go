@@ -13,7 +13,44 @@ import (
 const (
 	proxyProvidersPath  = "/api/v3/providers/proxy/"
 	oauth2ProvidersPath = "/api/v3/providers/oauth2/"
+	allProvidersPath    = "/api/v3/providers/all/"
 )
+
+// Provider component discriminators, from the polymorphic /providers/all/ list
+// and detail routes. Authentik returns a `component` field naming the provider
+// type: a proxy provider is ak-provider-proxy-form and a genuine OAuth2/OIDC
+// provider is ak-provider-oauth2-form. Because ProxyProvider is a subclass of
+// OAuth2Provider, this component field is the only reliable type discriminator
+// when a provider is known only by pk.
+const (
+	ComponentProxyProvider  = "ak-provider-proxy-form"
+	ComponentOAuth2Provider = "ak-provider-oauth2-form"
+)
+
+// ProviderRef is the minimal cross-type view of a provider from the polymorphic
+// /providers/all/{pk}/ detail route: its integer pk, its name, and the component
+// discriminator that names its concrete type. It is what lets a caller learn the
+// TYPE of a provider it knows only by pk (an application's provider FK), which no
+// typed endpoint can do because the oauth2 list also returns proxy providers.
+type ProviderRef struct {
+	PK        int    `json:"pk"`
+	Name      string `json:"name"`
+	Component string `json:"component"`
+}
+
+// GetProviderByPK looks up any provider by its integer pk through the polymorphic
+// /providers/all/{pk}/ detail route and returns its name and component (type). A
+// 404 unwraps to ErrNotFound. This is the type-accurate by-pk lookup adoption
+// needs to refuse a provider-type change and to rename the right kind of provider
+// in place.
+func (c *Client) GetProviderByPK(ctx context.Context, pk int) (*ProviderRef, error) {
+	var out ProviderRef
+	path := allProvidersPath + strconv.Itoa(pk) + "/"
+	if err := c.do(ctx, http.MethodGet, path, nil, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
 
 // GetProxyProviderByName finds a proxy provider by exact name. The list endpoint
 // filters by search (fuzzy), so the exact name is confirmed client-side, matching

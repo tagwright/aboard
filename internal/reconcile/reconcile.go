@@ -177,6 +177,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, s spec.Spec) (*Result, error
 	slug := s.Slug
 	markerName := providerMarkerName(slug)
 
+	// adoptPK, when set, is the pk of a pre-existing provider an adopted
+	// application points at, which the provider convergence PATCHes in place
+	// (renaming it to the marker AND pushing the desired shape in one validated
+	// call) rather than creating a fresh aboard-named provider and re-pointing.
+	var adoptPK *int
+
 	// Step a: resolve the effective flows, groups, outpost, and bindings.
 	authzSlug := s.Flow
 	if authzSlug == "" {
@@ -230,6 +236,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, s spec.Spec) (*Result, error
 			if aerr := r.adoptionGate(ctx, res, s, slug, app, own, desired); aerr != nil {
 				return res, aerr
 			}
+			// Adoption was granted (the gate returned no error). Take over the
+			// pre-existing provider the app points at by PATCHing it IN PLACE below,
+			// rather than creating a fresh aboard-named provider and re-pointing the
+			// app. Verified empirically against Authentik 2025.6.4: a
+			// create-and-repoint leaves the old provider attached to the embedded
+			// outpost with the SAME external_host, and aboard's app-based orphan scan
+			// can never see it (it is not aboard-named and no application points at
+			// it), so prune can never clean it and it lingers forever. Forward-auth
+			// still RESOLVES with the duplicate (the outpost picks one deterministically
+			// and returns a correct 302-to-login), so this is a cleanliness and
+			// prunability fix, not a resolution fix. The single full-body PATCH the
+			// converge step does both renames and reconfigures the provider, which
+			// also sidesteps Authentik's proxy-provider validator rejecting a
+			// name-only PATCH ("internal_host cannot be empty ...") on a partial
+			// update that omits mode.
+			if app != nil && app.Provider != nil {
+				adoptPK = app.Provider
+			}
 		}
 	}
 
@@ -238,9 +262,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, s spec.Spec) (*Result, error
 	var providerPK int
 	switch s.Provider {
 	case spec.ProviderForwardAuth:
-		providerPK, err = r.convergeProxyProvider(ctx, res, s, markerName, authz.PK, inval.PK)
+		providerPK, err = r.convergeProxyProvider(ctx, res, s, markerName, authz.PK, inval.PK, adoptPK)
 	case spec.ProviderOIDC:
-		providerPK, err = r.convergeOAuth2Provider(ctx, res, s, slug, markerName, authz.PK, inval.PK)
+		providerPK, err = r.convergeOAuth2Provider(ctx, res, s, slug, markerName, authz.PK, inval.PK, adoptPK)
 	default:
 		return res, r.fail(res, CodeProviderUnknown, "unknown provider type "+string(s.Provider))
 	}
@@ -400,7 +424,7 @@ func (r *Reconciler) resolveBindings(ctx context.Context, res *Result, groups, p
 
 // convergeProxyProvider creates or PATCHes the aboard-named proxy provider for a
 // forward-auth spec and returns its pk.
-func (r *Reconciler) convergeProxyProvider(ctx context.Context, res *Result, s spec.Spec, name, authzPK, invalPK string) (int, error) {
+func (r *Reconciler) convergeProxyProvider(ctx context.Context, res *Result, s spec.Spec, name, authzPK, invalPK string, adoptPK *int) (int, error) {
 	body := authentik.ProxyProviderRequest{
 		Name:              name,
 		AuthorizationFlow: authzPK,
@@ -408,6 +432,18 @@ func (r *Reconciler) convergeProxyProvider(ctx context.Context, res *Result, s s
 		ExternalHost:      "https://" + s.Host,
 		Mode:              authentik.ProxyModeForwardSingle,
 		SkipPathRegex:     strings.Join(s.ForwardAuth.PublicPaths, "\n"),
+	}
+
+	// Adoption: PATCH the pre-existing provider the app points at, in place. This
+	// single full-body PATCH both renames it to the marker and pushes the desired
+	// shape, taking ownership without creating a duplicate.
+	if adoptPK != nil {
+		patched, perr := r.api.PatchProxyProvider(ctx, *adoptPK, body)
+		if perr != nil {
+			return 0, r.fail(res, CodeAPI, "adopt forward-auth provider as "+name+": "+perr.Error())
+		}
+		res.Actions = append(res.Actions, "adopted forward-auth provider as "+name)
+		return patched.PK, nil
 	}
 
 	existing, err := r.api.GetProxyProviderByName(ctx, name)
@@ -434,7 +470,7 @@ func (r *Reconciler) convergeProxyProvider(ctx context.Context, res *Result, s s
 // an OIDC spec and returns its pk. It resolves the client secret inward (by
 // NAME, length-checked, never logged), the signing key, and the always-present
 // plus extra scope mappings.
-func (r *Reconciler) convergeOAuth2Provider(ctx context.Context, res *Result, s spec.Spec, slug, name, authzPK, invalPK string) (int, error) {
+func (r *Reconciler) convergeOAuth2Provider(ctx context.Context, res *Result, s spec.Spec, slug, name, authzPK, invalPK string, adoptPK *int) (int, error) {
 	clientType := authentik.ClientTypeConfidential
 	if s.OIDC.ClientKind == spec.ClientPublic {
 		clientType = authentik.ClientTypePublic
@@ -492,6 +528,17 @@ func (r *Reconciler) convergeOAuth2Provider(ctx context.Context, res *Result, s 
 	}
 	if clientType == authentik.ClientTypeConfidential {
 		body.ClientSecret = clientSecret
+	}
+
+	// Adoption: PATCH the pre-existing OIDC provider the app points at, in place,
+	// renaming and reconfiguring it in one call rather than creating a duplicate.
+	if adoptPK != nil {
+		patched, perr := r.api.PatchOAuth2Provider(ctx, *adoptPK, body)
+		if perr != nil {
+			return 0, r.fail(res, CodeAPI, "adopt OIDC provider as "+name+": "+perr.Error())
+		}
+		res.Actions = append(res.Actions, "adopted OIDC provider as "+name)
+		return patched.PK, nil
 	}
 
 	existing, err := r.api.GetOAuth2ProviderByName(ctx, name)
