@@ -1,0 +1,54 @@
+# Example aboard.yml. aboard.yml is config-as-code, SOPS-and-git-friendly,
+# because nothing in it is a secret value. It holds the Authentik endpoint, the
+# API token NAME, the fleet default flows, the outpost default, the signing key
+# name, the proxy setting, the Traefik middleware name and version, and the fleet
+# default groups. Every credential is a secret NAME, resolved at runtime from
+# $ABOARD_SECRETS_DIR/<name> (default /run/aboard/secrets/<name>), then the
+# environment variable ABOARD_SECRET_<NAME>. No literal secret ever appears here.
+
+authentik:
+  # The INTERNAL Authentik endpoint, never the Cloudflare-fronted public URL:
+  # the public URL is blocked for programmatic calls.
+  url: http://authentik-server:9000
+  # Used ONLY to compose discovery URLs in `aboard render` output.
+  public_url: https://auth.natecalvert.org
+  # Secret NAME of aboard's Authentik API token, the crown jewel. Resolved from a
+  # file at deploy time like every other secret ref, delivered by berm. This is a
+  # name, never the token value.
+  token: aboard-api-token
+
+# Fleet default flows every per-container reconcile starts from. These are the
+# Authentik built-in defaults. A per-container aboard.flow label overrides the
+# authorization flow. A nonexistent flow is a validation error.
+flows:
+  authorization: default-provider-authorization-implicit-consent
+  invalidation: default-provider-invalidation-flow
+
+# Fleet default outpost a forward-auth provider is attached to. `embedded` is the
+# Authentik built-in embedded outpost. A per-container aboard.outpost label names
+# a different existing outpost. aboard NEVER creates outposts.
+outpost: embedded
+
+oidc:
+  # Certificate NAME of the OIDC signing key, defaulting to Authentik's
+  # self-signed pair. Not a secret value.
+  signing_key: authentik Self-signed Certificate
+
+# Proxy integration switch, mirrors ABOARD_PROXY. `traefik` runs the verify-and-
+# render Traefik audit, `none` turns it off for a Caddy or nginx fleet (which
+# then writes aboard.host explicitly on each container).
+proxy: traefik
+
+traefik:
+  # The one shared forward-auth middleware name, defined once for the whole
+  # fleet. There is deliberately no per-container override.
+  middleware: authentik@docker
+  # The fleet's Traefik major version. Traefik v2 and v3 spell HostRegexp
+  # differently, so `aboard render` targets this version.
+  version: 3
+
+defaults:
+  # Fleet default access list bound to every enrolled Application. Any
+  # aboard.groups label REPLACES this wholesale rather than merging. The listed
+  # groups must already exist in Authentik.
+  groups: [public-users]
