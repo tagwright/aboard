@@ -33,6 +33,21 @@ func isAboardProviderName(name string) bool {
 	return strings.HasSuffix(name, ownerSuffix)
 }
 
+// providerKindFromComponent maps an Authentik provider `component` discriminator
+// to aboard's provider type. An unrecognized component (a saml or other provider
+// aboard does not model) yields the empty type, which callers treat as "type
+// unknown, do not assert a match".
+func providerKindFromComponent(component string) spec.ProviderType {
+	switch component {
+	case authentik.ComponentProxyProvider:
+		return spec.ProviderForwardAuth
+	case authentik.ComponentOAuth2Provider:
+		return spec.ProviderOIDC
+	default:
+		return ""
+	}
+}
+
 // ownership is the result of resolving whether an application is aboard-owned
 // and, if so, of which provider kind. An application is aboard-owned when its
 // provider pk matches the aboard-named provider derived from its slug

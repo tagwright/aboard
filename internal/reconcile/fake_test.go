@@ -17,9 +17,10 @@ import (
 // to fail, which is how the tests drive a mid-reconcile failure and prove the
 // attach is skipped.
 type fakeAPI struct {
-	flows          map[string]*authentik.Flow
-	proxyByName    map[string]*authentik.ProxyProvider
-	oauthByName    map[string]*authentik.OAuth2Provider
+	flows           map[string]*authentik.Flow
+	proxyByName     map[string]*authentik.ProxyProvider
+	oauthByName     map[string]*authentik.OAuth2Provider
+	providerRefByPK map[int]*authentik.ProviderRef
 	appBySlug      map[string]*authentik.Application
 	apps           []authentik.Application
 	groups         map[string]*authentik.Group
@@ -55,9 +56,10 @@ type fakeAPI struct {
 
 func newFake() *fakeAPI {
 	return &fakeAPI{
-		flows:          map[string]*authentik.Flow{},
-		proxyByName:    map[string]*authentik.ProxyProvider{},
-		oauthByName:    map[string]*authentik.OAuth2Provider{},
+		flows:           map[string]*authentik.Flow{},
+		proxyByName:     map[string]*authentik.ProxyProvider{},
+		oauthByName:     map[string]*authentik.OAuth2Provider{},
+		providerRefByPK: map[int]*authentik.ProviderRef{},
 		appBySlug:      map[string]*authentik.Application{},
 		groups:         map[string]*authentik.Group{},
 		policies:       map[string]*authentik.Policy{},
@@ -128,7 +130,25 @@ func (f *fakeAPI) PatchProxyProvider(_ context.Context, pk int, body authentik.P
 		return nil, err
 	}
 	f.patchedProxy[pk] = body
-	return &authentik.ProxyProvider{PK: pk, Name: body.Name}, nil
+	p := &authentik.ProxyProvider{PK: pk, Name: body.Name}
+	// A rename PATCH (name set) makes the provider findable by its new name, as
+	// the real API does, so the adoption in-place rename can be looked up by the
+	// marker name on the converge step that follows it.
+	if body.Name != "" {
+		f.proxyByName[body.Name] = p
+		f.providerRefByPK[pk] = &authentik.ProviderRef{PK: pk, Name: body.Name, Component: authentik.ComponentProxyProvider}
+	}
+	return p, nil
+}
+
+func (f *fakeAPI) GetProviderByPK(_ context.Context, pk int) (*authentik.ProviderRef, error) {
+	if err := f.rec("GetProviderByPK"); err != nil {
+		return nil, err
+	}
+	if ref, ok := f.providerRefByPK[pk]; ok {
+		return ref, nil
+	}
+	return nil, authentik.ErrNotFound
 }
 
 func (f *fakeAPI) DeleteProxyProvider(_ context.Context, pk int) error {
@@ -165,7 +185,12 @@ func (f *fakeAPI) PatchOAuth2Provider(_ context.Context, pk int, body authentik.
 		return nil, err
 	}
 	f.patchedOAuth[pk] = body
-	return &authentik.OAuth2Provider{PK: pk, Name: body.Name}, nil
+	p := &authentik.OAuth2Provider{PK: pk, Name: body.Name, ClientType: body.ClientType, ClientID: body.ClientID}
+	if body.Name != "" {
+		f.oauthByName[body.Name] = p
+		f.providerRefByPK[pk] = &authentik.ProviderRef{PK: pk, Name: body.Name, Component: authentik.ComponentOAuth2Provider}
+	}
+	return p, nil
 }
 
 func (f *fakeAPI) DeleteOAuth2Provider(_ context.Context, pk int) error {
