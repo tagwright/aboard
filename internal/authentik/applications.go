@@ -14,12 +14,22 @@ const (
 	bindingsPath     = "/api/v3/policies/bindings/"
 )
 
-// GetApplicationBySlug finds an application by slug through the list filter,
-// matching the production script. The slug is unique, so the filtered list holds
-// at most one result. Not found returns ErrNotFound. (Mutations below address the
-// application by its slug detail route, since slug is its REST lookup field.)
+// GetApplicationBySlug finds an application by slug through the list filter. The
+// slug is unique, so the filtered list holds at most one result. Not found
+// returns ErrNotFound. (Mutations below address the application by its slug
+// detail route, since slug is its REST lookup field.)
+//
+// superuser_full_list=true is REQUIRED and verified against the live 2025.6.4
+// API: the applications LIST endpoint otherwise applies per-application access
+// filtering to the result set (the policy engine is run for the token's user and
+// apps it may not launch are dropped, while the pagination count is computed
+// BEFORE that filter, so count can exceed the results). Without this flag a
+// reconciler cannot see an application it manages but whose access policy its own
+// service-account user does not pass, and would then try to CREATE a duplicate
+// and get a 400 slug-conflict. A reconciler must see every application
+// deterministically, which is exactly what this flag gives a superuser token.
 func (c *Client) GetApplicationBySlug(ctx context.Context, slug string) (*Application, error) {
-	q := url.Values{"slug": {slug}}
+	q := url.Values{"slug": {slug}, "superuser_full_list": {"true"}}
 	page, err := listPage[Application](ctx, c, applicationsPath, q)
 	if err != nil {
 		return nil, err
@@ -83,7 +93,13 @@ func (c *Client) ListApplications(ctx context.Context, pageSize int) ([]Applicat
 	var all []Application
 	page := 1
 	for {
+		// superuser_full_list=true is required so the orphan scan sees EVERY
+		// application, not only the ones the token's user is allowed to launch: the
+		// list endpoint otherwise access-filters the result set (see
+		// GetApplicationBySlug). An orphan scan that silently misses filtered apps
+		// would under-report orphans and let prune leave live objects behind.
 		q := pageSizeQuery(page, pageSize)
+		q.Set("superuser_full_list", "true")
 		resp, err := listPage[Application](ctx, c, applicationsPath, q)
 		if err != nil {
 			return nil, err
