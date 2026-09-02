@@ -8,26 +8,24 @@
 // container's Traefik forward-auth wiring. It drives Authentik, it never
 // rebuilds the IdP.
 //
-// This is the repo skeleton. Only the version subcommand is wired. The
-// reconcile, Authentik REST, Traefik audit, and discovery logic land in later
-// phases.
+// The full CLI surface (status, render, prune, validate) lands in a later phase.
+// The daemon subcommand here is the event-driven control loop's entry point: it
+// wires the socket watch to discovery, the reconciler, the Traefik verifier, and
+// beacon, and runs until interrupted.
 package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
+	"github.com/tagwright/aboard/internal/config"
+	"github.com/tagwright/aboard/internal/daemon"
 	"github.com/tagwright/aboard/internal/version"
-
-	// aboard is a tagwright suite tool. It builds on the shared runtime
-	// abstraction (core) and the suite notifier (beacon), the same way berm
-	// and ballast do. The reconcile, discovery, and alert wiring that use them
-	// land in later phases; the blank imports pin the suite dependency now so
-	// the module graph is stable from the skeleton on.
-	_ "github.com/tagwright/beacon"
-	_ "github.com/tagwright/core/runtime"
 )
 
 func main() {
@@ -50,7 +48,34 @@ func newRootCmd() *cobra.Command {
 	root.SetVersionTemplate("aboard {{.Version}}\n")
 
 	root.AddCommand(newVersionCmd())
+	root.AddCommand(newDaemonCmd())
 	return root
+}
+
+// newDaemonCmd wires `aboard daemon`, the event-driven control loop. It resolves
+// the config path, installs a SIGINT/SIGTERM-cancelled context, and hands off to
+// daemon.Serve, which does the full wiring and blocks until interrupted. The
+// heavier CLI surface (status, render, prune, validate) is a later phase; this is
+// the one command the daemon needs.
+func newDaemonCmd() *cobra.Command {
+	var configPath string
+	cmd := &cobra.Command{
+		Use:   "daemon",
+		Short: "Run the label-driven reconcile-and-audit control loop",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			path := configPath
+			if path == "" {
+				path = config.ResolveConfigPath()
+			}
+			return daemon.Serve(ctx, path, logger)
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "", "path to aboard.yml (default: ABOARD_CONFIG, ./aboard.yml, then /etc/aboard/aboard.yml)")
+	return cmd
 }
 
 func newVersionCmd() *cobra.Command {
