@@ -28,11 +28,6 @@ import (
 	// the module graph is stable from the skeleton on.
 	_ "github.com/tagwright/beacon"
 	_ "github.com/tagwright/core/runtime"
-
-	// aboard.yml (the fleet config: API token path, default outpost, default
-	// groups) is parsed with the suite's YAML library. The loader lands in a
-	// later phase; the blank import pins the dependency now.
-	_ "gopkg.in/yaml.v3"
 )
 
 func main() {
