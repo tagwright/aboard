@@ -40,6 +40,14 @@ const (
 	// self-signed certificate pair (Fork 7).
 	DefaultSigningKey = "authentik Self-signed Certificate"
 
+	// DefaultGroupsScope is the oidc.groups_scope fallback: the NAME of the OAuth2
+	// scope mapping aboard attaches to deliver group membership in OIDC tokens when
+	// group-claim is on. aboard references it by name and NEVER creates it (a
+	// groups scope mapping is a fleet-level identity/IaC object), the same posture
+	// as a named group. aboard render --blueprint emits a ready-to-reconcile
+	// definition for it, and a missing one is a loud validation error.
+	DefaultGroupsScope = "groups"
+
 	// DefaultMiddleware is the traefik.middleware fallback (Fork 6).
 	DefaultMiddleware = "authentik@docker"
 
@@ -87,8 +95,12 @@ type Flows struct {
 }
 
 // OIDC is the OIDC fleet block. SigningKey is a certificate NAME, not a secret.
+// GroupsScope is the NAME of the scope mapping aboard attaches to deliver group
+// membership in OIDC tokens when group-claim is on, referenced by name and never
+// created.
 type OIDC struct {
-	SigningKey string `yaml:"signing_key"`
+	SigningKey  string `yaml:"signing_key"`
+	GroupsScope string `yaml:"groups_scope"`
 }
 
 // SAML is the SAML fleet block. SigningKey is a certificate NAME, not a secret:
@@ -207,6 +219,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.OIDC.SigningKey == "" {
 		c.OIDC.SigningKey = DefaultSigningKey
+	}
+	if c.OIDC.GroupsScope == "" {
+		c.OIDC.GroupsScope = DefaultGroupsScope
 	}
 	if c.SAML.SigningKey == "" {
 		c.SAML.SigningKey = DefaultSigningKey

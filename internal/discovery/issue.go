@@ -91,6 +91,11 @@ const (
 	// CodeRequireInvalid is an aboard.require value that is not any or all.
 	CodeRequireInvalid = "require-invalid"
 
+	// CodeGroupsClaimInvalid is an aboard.groups.claim value that is not true or
+	// false. Group-claim is default on, so only an explicit malformed opt-out is an
+	// error.
+	CodeGroupsClaimInvalid = "groups-claim-invalid"
+
 	// CodeHostInvalid is an explicit aboard.host that is not a bare hostname (it
 	// carries a scheme, a path, or a port).
 	CodeHostInvalid = "host-invalid"
