@@ -7,7 +7,9 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
+	"strings"
 )
 
 // listPage issues one GET against a list endpoint and decodes the paginated
@@ -154,6 +156,50 @@ func (c *Client) GetScopeMappingByName(ctx context.Context, scopeName string) (*
 		}
 	}
 	return &page.Results[0], nil
+}
+
+// samlPropertyMappingsPath is the SAML attribute property-mapping list endpoint.
+const samlPropertyMappingsPath = "/api/v3/propertymappings/provider/saml/"
+
+// GetSAMLPropertyMappings returns the pks of Authentik's own managed default SAML
+// attribute mappings: every mapping whose managed marker starts with
+// ManagedSAMLPrefix. These are always attached to an aboard SAML provider so its
+// assertions carry attributes, the analog of the always-present OIDC scopes. The
+// result is ordered by name for a stable request body. It walks one generous
+// page, since the default set is small (seven mappings on 2025.6.4).
+func (c *Client) GetSAMLPropertyMappings(ctx context.Context) ([]string, error) {
+	q := pageSizeQuery(1, 100)
+	page, err := listPage[SAMLPropertyMapping](ctx, c, samlPropertyMappingsPath, q)
+	if err != nil {
+		return nil, err
+	}
+	var pks []string
+	for i := range page.Results {
+		m := page.Results[i].Managed
+		if m != nil && strings.HasPrefix(*m, ManagedSAMLPrefix) {
+			pks = append(pks, page.Results[i].PK)
+		}
+	}
+	sort.Strings(pks)
+	return pks, nil
+}
+
+// GetSAMLPropertyMappingByName finds a SAML property mapping by exact display
+// name, for an extra mapping the operator adds with aboard.saml.mappings. The
+// list endpoint filters by fuzzy search, so the exact name is confirmed
+// client-side. Not found returns ErrNotFound.
+func (c *Client) GetSAMLPropertyMappingByName(ctx context.Context, name string) (*SAMLPropertyMapping, error) {
+	q := url.Values{"search": {name}}
+	page, err := listPage[SAMLPropertyMapping](ctx, c, samlPropertyMappingsPath, q)
+	if err != nil {
+		return nil, err
+	}
+	for i := range page.Results {
+		if page.Results[i].Name == name {
+			return &page.Results[i], nil
+		}
+	}
+	return nil, ErrNotFound
 }
 
 // CreateGroup creates a group with the given name and returns it. It is the one

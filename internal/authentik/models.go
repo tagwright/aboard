@@ -37,6 +37,18 @@ const (
 	// mappings. A scope lookup prefers a mapping whose managed marker starts with
 	// this over any user-created mapping of the same scope name.
 	ManagedScopePrefix = "goauthentik.io/providers/oauth2/scope-"
+
+	// ManagedSAMLPrefix is the prefix on Authentik's own managed SAML property
+	// mappings (the seven default attribute mappings: Email, Groups, Name, UPN,
+	// User ID, Username, WindowsAccountname). aboard attaches every mapping whose
+	// managed marker starts with this so a SAML provider's assertions carry
+	// attributes, the analog of the always-present OIDC scopes.
+	ManagedSAMLPrefix = "goauthentik.io/providers/saml/"
+
+	// SpBindingPost and SpBindingRedirect are the two SpBindingEnum values a SAML
+	// provider's sp_binding can carry.
+	SpBindingPost     = "post"
+	SpBindingRedirect = "redirect"
 )
 
 // Pagination is the wrapper metadata on every list response. next and previous
@@ -157,6 +169,63 @@ type OAuth2ProviderRequest struct {
 	ClientSecret      string        `json:"client_secret,omitempty"`
 	SigningKey        string        `json:"signing_key,omitempty"`
 	PropertyMappings  []string      `json:"property_mappings,omitempty"`
+}
+
+// SAMLProvider is a SAML provider. pk is an integer. It carries the writable
+// shape aboard sets (acs_url, audience, issuer, sp_binding, signing_kp,
+// property_mappings) plus the component discriminator and the read-only metadata
+// download URL. Unlike ProxyProvider it is not an OAuth2Provider subclass, so it
+// is a clean, separate type.
+type SAMLProvider struct {
+	PK                  int      `json:"pk"`
+	Name                string   `json:"name"`
+	AuthorizationFlow   string   `json:"authorization_flow"`
+	InvalidationFlow    string   `json:"invalidation_flow"`
+	ACSUrl              string   `json:"acs_url"`
+	Audience            string   `json:"audience"`
+	Issuer              string   `json:"issuer"`
+	SpBinding           string   `json:"sp_binding"`
+	SigningKp           *string  `json:"signing_kp"`
+	PropertyMappings    []string `json:"property_mappings"`
+	Component           string   `json:"component"`
+	URLDownloadMetadata string   `json:"url_download_metadata"`
+}
+
+// SAMLProviderRequest is the create/patch body for a SAML provider. The schema
+// requires name, authorization_flow, invalidation_flow, and acs_url on create.
+// issuer carries omitempty because the request schema forbids an empty string
+// (an unset issuer means Authentik's default), and signing_kp is a plain string
+// (the keypair uuid) rather than a pointer because aboard always resolves and
+// sends one. No field here is ever a secret: a SAML provider signs with a
+// keypair Authentik holds, it shares no inward secret.
+type SAMLProviderRequest struct {
+	Name              string   `json:"name,omitempty"`
+	AuthorizationFlow string   `json:"authorization_flow,omitempty"`
+	InvalidationFlow  string   `json:"invalidation_flow,omitempty"`
+	ACSUrl            string   `json:"acs_url,omitempty"`
+	Audience          string   `json:"audience,omitempty"`
+	Issuer            string   `json:"issuer,omitempty"`
+	SpBinding         string   `json:"sp_binding,omitempty"`
+	SigningKp         string   `json:"signing_kp,omitempty"`
+	PropertyMappings  []string `json:"property_mappings,omitempty"`
+}
+
+// SAMLMetadata is the response of the SAML provider metadata endpoint: the IdP
+// metadata XML as a string plus a download URL. Both are read-only. This is the
+// non-secret handoff an operator feeds to the SP, the SAML analog of an OIDC
+// discovery document.
+type SAMLMetadata struct {
+	Metadata    string `json:"metadata"`
+	DownloadURL string `json:"download_url"`
+}
+
+// SAMLPropertyMapping is a SAML attribute property mapping. managed is nullable;
+// a mapping whose managed marker starts with ManagedSAMLPrefix is one of
+// Authentik's own default attribute mappings.
+type SAMLPropertyMapping struct {
+	PK      string  `json:"pk"`
+	Name    string  `json:"name"`
+	Managed *string `json:"managed"`
 }
 
 // Outpost is an outpost instance. pk is a uuid string. managed is nullable and
