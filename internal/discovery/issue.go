@@ -25,6 +25,14 @@ const (
 
 	// SeverityWarning is a non-fatal notice that does not skip reconcile.
 	SeverityWarning
+
+	// SeverityInfo is a purely informational notice, below a warning. It never
+	// skips or alerts on its own. The reconciler raises it, for the silent
+	// adoption of a pre-existing object that reconciling would not change (Fork
+	// 9), so the operator sees the one-time migration in the digest without it
+	// being flagged as a problem. Appended after the two validation levels so
+	// their numeric values, and HasError, are unchanged.
+	SeverityInfo
 )
 
 // String is a stable machine-readable token for a severity, used in messages and
@@ -35,6 +43,8 @@ func (s Severity) String() string {
 		return "error"
 	case SeverityWarning:
 		return "warning"
+	case SeverityInfo:
+		return "info"
 	default:
 		return "unknown"
 	}

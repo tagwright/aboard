@@ -60,6 +60,18 @@ func (c *Client) DeleteApplication(ctx context.Context, slug string) error {
 	return c.do(ctx, http.MethodDelete, path, nil, nil, nil)
 }
 
+// SetApplicationIconURL sets the application's library icon to iconURL through
+// the dedicated set_icon_url action, POST
+// /api/v3/core/applications/{slug}/set_icon_url/ with a JSON FilePathRequest
+// body. This is the only way to set the icon: meta_icon is read-only on
+// ApplicationRequest, so it cannot ride along on a normal create or PATCH. The
+// icon is a cosmetic field, so the reconciler calls this only when the label
+// declared one (declared-means-managed). A 404 unwraps to ErrNotFound.
+func (c *Client) SetApplicationIconURL(ctx context.Context, slug, iconURL string) error {
+	path := applicationsPath + url.PathEscape(slug) + "/set_icon_url/"
+	return c.do(ctx, http.MethodPost, path, nil, FilePathRequest{URL: iconURL}, nil)
+}
+
 // ListApplications returns every application, following pagination.next across
 // pages with an explicit page_size. It is the one place a full-fleet listing can
 // span multiple pages (the reconcile-on-boot pass), so unlike the script's
