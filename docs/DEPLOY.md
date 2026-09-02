@@ -188,44 +188,88 @@ and lets you rotate or revoke aboard's access without touching anyone else.
    (for example `aboard-api-token`). It reaches aboard's container as a file,
    through berm or the SOPS init step above. The token value never goes in
    `aboard.yml`.
+3. Create an RBAC role (for example `aboard`) carrying the permissions in the
+   tables below, assign those permissions to the role globally, and bind the role
+   to the service account through a group. Do NOT enable "Is superuser" on the
+   account or its group.
 
 ### What the token must be allowed to do
 
-Aboard lists applications with `superuser_full_list=true`. On the live API that
-flag is honored only for a superuser: without it the applications LIST endpoint
-access-filters the result set for the token's own user, so a non-superuser token
-cannot reliably see an application it manages but whose access policy its own
-account does not pass. Aboard depends on seeing every application
-deterministically, both to avoid creating a duplicate on reconcile and to detect
-orphans for `prune`. So the aboard service account must currently be a
-SUPERUSER: put it in a group with "Is superuser" enabled (a dedicated `aboard`
-group is cleanest, so the grant is visible and revocable), and keep it a service
-account with a single API token, nothing more.
+The aboard service account is a DEDICATED non-superuser service account. It does
+NOT need superuser, and you should not grant it superuser. Assign it the
+fine-grained RBAC role below (globally, through a group, which is how Authentik
+binds a role to a service account), and nothing more. The whole role is proven
+end to end against a live Authentik on a scoped token: aboard enumerates every
+application it owns, including ones whose access policy the service account's own
+user cannot pass, and reconciles, detects orphans, and prunes without a superuser
+flag.
 
-That is the honest state of the tool today. The fine-grained permission set
-below documents exactly which Authentik objects aboard actually touches, so you
-know the real surface and can scope a role toward least privilege as the flag
-requirement is lifted. It is the intended target, not yet a sufficient
-standalone grant given the `superuser_full_list` behavior above.
+How this works without superuser, and the one gotcha to know:
 
-| Authentik object | Permissions aboard uses | Notes |
-|---|---|---|
-| Application | view, add, change, delete | Create and reconcile the Application. Delete only via `aboard prune`. |
-| Proxy provider | view, add, change, delete | The forward-auth provider. |
-| OAuth2 provider | view, add, change, delete | The OIDC provider. |
-| SAML provider | view, add, change, delete | The SAML provider, plus reading its metadata. |
-| Outpost | view, change | Read-modify-write the outpost's providers list (PATCH). Aboard never creates or deletes an outpost. |
-| Policy binding | view, add, delete | Bind and unbind groups and policies on the Application. No change (a binding is added or removed, never edited). |
-| Group | view (add) | Read groups to bind. `add` only if `ABOARD_CREATE_GROUPS=true`. Never changed or deleted. |
-| Flow | view | Look up the authorization and invalidation flows by slug. Read-only. |
-| Certificate keypair | view | Look up the OIDC and SAML signing keys by name. Read-only. |
-| Property mapping | view | Look up the OIDC groups scope and SAML attribute mappings by name. Read-only. Aboard never creates a mapping. |
-| Policy | view | Look up a policy by name before binding it. Read-only. |
+- Aboard reads a single application by its slug through the DETAIL route
+  `GET /core/applications/{slug}/`, which gates on the global `view_application`
+  permission and is NOT access-filtered. The application LIST endpoint, by
+  contrast, runs the access policy for the token's own user and silently drops
+  applications it may not launch (only a superuser's `superuser_full_list=true`
+  overrides that), so aboard does not use it for existence checks. A non-superuser
+  token therefore still sees an application it manages but is not itself a member
+  of, which is what stops reconcile from creating a duplicate.
 
-Delete on Application and the three provider types is exercised only by
-`aboard prune`. The daemon never deletes (the `keep`-on-removal default), so if
-you run `prune` from a separate operator context you can leave delete off the
-daemon's own grant.
+- Aboard enumerates its owned providers (for the orphan scan and `prune`) through
+  the polymorphic `GET /providers/all/` list, which is not access-filtered
+  either. GOTCHA: that viewset checks the BASE model permission
+  `authentik_core.view_provider`, which the typed `view_proxyprovider` /
+  `view_oauth2provider` / `view_samlprovider` permissions do NOT cover. Without
+  the base `view_provider` the route returns 403 even with every typed provider
+  read granted. The base `view_provider` is REQUIRED and is easy to miss, so
+  grant it explicitly.
+
+Read permissions (all global):
+
+| Authentik permission | Why |
+|---|---|
+| `authentik_core.view_application` | Read an application by its slug detail route (existence and adoption). |
+| `authentik_core.view_provider` | REQUIRED for `GET /providers/all/` (base model perm, which the typed `view_*provider` perms do not cover). The orphan scan and prune depend on it. |
+| `authentik_providers_proxy.view_proxyprovider` | Look up the forward-auth provider by name. |
+| `authentik_providers_oauth2.view_oauth2provider` | Look up the OIDC provider by name. |
+| `authentik_providers_saml.view_samlprovider` | Look up the SAML provider by name and read its metadata. |
+| `authentik_outposts.view_outpost` | Read the embedded outpost's providers list before the read-modify-write. |
+| `authentik_policies.view_policybinding` | Read the existing bindings on an application for the strict binding pass. |
+| `authentik_flows.view_flow` | Look up the authorization and invalidation flows by slug. |
+| `authentik_crypto.view_certificatekeypair` | Look up the OIDC and SAML signing keys by name. |
+| `authentik_core.view_group` | Read the groups your labels bind. |
+| `authentik_core.view_propertymapping` | Look up the OIDC groups scope mapping by name. |
+| `authentik_providers_saml.view_samlpropertymapping` | Look up the SAML attribute mappings by name. |
+
+Write permissions (all global):
+
+| Authentik permission | Why |
+|---|---|
+| `authentik_core.add_application`, `change_application` | Create and reconcile the Application. |
+| `authentik_providers_proxy.add_proxyprovider`, `change_proxyprovider` | Create and reconcile the forward-auth provider. |
+| `authentik_providers_oauth2.add_oauth2provider`, `change_oauth2provider` | Create and reconcile the OIDC provider. |
+| `authentik_providers_saml.add_samlprovider`, `change_samlprovider` | Create and reconcile the SAML provider. |
+| `authentik_outposts.change_outpost` | Attach and detach providers on the embedded outpost (PATCH). Aboard never creates or deletes an outpost. |
+| `authentik_policies.add_policybinding`, `delete_policybinding` | Bind and unbind groups and policies on the Application. A binding is added or removed, never edited, so no `change`. |
+| `authentik_core.add_group` | ONLY when `ABOARD_CREATE_GROUPS=true`. Create an empty group aboard is told to own. Never needed otherwise, and aboard never changes or deletes a group. |
+
+Prune-only permissions (all global), needed ONLY if you run `aboard prune`:
+
+| Authentik permission | Why |
+|---|---|
+| `authentik_core.delete_application` | Delete an orphaned Application. |
+| `authentik_providers_proxy.delete_proxyprovider` | Delete an orphaned forward-auth provider. |
+| `authentik_providers_oauth2.delete_oauth2provider` | Delete an orphaned OIDC provider. |
+| `authentik_providers_saml.delete_samlprovider` | Delete an orphaned SAML provider. |
+
+The daemon never deletes (the `keep`-on-removal default), so a reconcile-only
+deployment can leave every `delete_*` permission off. If you run `prune` from a
+separate operator context, grant the delete permissions to that context and keep
+them off the daemon's own role.
+
+A leaked scoped token can manage aboard-shaped SSO objects but is not a full-IdP
+compromise: it cannot read or mint arbitrary tokens, edit flows or stages, or
+grant superuser. That is the point of scoping it.
 
 The identity-layer objects aboard references but never creates (the groups your
 labels bind, and the OIDC groups scope mapping) are defined as IaC in an
