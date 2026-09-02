@@ -14,32 +14,29 @@ const (
 	bindingsPath     = "/api/v3/policies/bindings/"
 )
 
-// GetApplicationBySlug finds an application by slug through the list filter. The
-// slug is unique, so the filtered list holds at most one result. Not found
-// returns ErrNotFound. (Mutations below address the application by its slug
-// detail route, since slug is its REST lookup field.)
+// GetApplicationBySlug finds an application by slug through its DETAIL route,
+// GET /api/v3/core/applications/{slug}/ (slug is the Application's REST lookup
+// field). A 200 decodes the full Application; a 404 unwraps to ErrNotFound.
 //
-// superuser_full_list=true is REQUIRED and verified against the live 2025.6.4
-// API: the applications LIST endpoint otherwise applies per-application access
-// filtering to the result set (the policy engine is run for the token's user and
-// apps it may not launch are dropped, while the pagination count is computed
-// BEFORE that filter, so count can exceed the results). Without this flag a
-// reconciler cannot see an application it manages but whose access policy its own
-// service-account user does not pass, and would then try to CREATE a duplicate
-// and get a 400 slug-conflict. A reconciler must see every application
-// deterministically, which is exactly what this flag gives a superuser token.
+// The detail route is deliberate and load-bearing, verified against the live
+// 2025.6.4 API: unlike the LIST endpoint it is NOT access-filtered. The LIST
+// endpoint runs the policy engine for the token's user and drops applications it
+// may not launch (while the pagination count is computed BEFORE that filter, so
+// count can exceed the results), which means a non-superuser reconciler cannot
+// see an application it manages but whose access policy its own service-account
+// user does not pass. On the old filtered-list path that invisibility made
+// reconcile believe the application was absent and try to CREATE a duplicate,
+// getting a 400 slug-conflict (the 0188a41 failure). The detail route gates on
+// the global view_application permission instead of the per-app launch policy, so
+// it returns every application deterministically WITHOUT a superuser token, which
+// is what lets aboard run on a least-privilege scoped service account.
 func (c *Client) GetApplicationBySlug(ctx context.Context, slug string) (*Application, error) {
-	q := url.Values{"slug": {slug}, "superuser_full_list": {"true"}}
-	page, err := listPage[Application](ctx, c, applicationsPath, q)
-	if err != nil {
+	var out Application
+	path := applicationsPath + url.PathEscape(slug) + "/"
+	if err := c.do(ctx, http.MethodGet, path, nil, nil, &out); err != nil {
 		return nil, err
 	}
-	for i := range page.Results {
-		if page.Results[i].Slug == slug {
-			return &page.Results[i], nil
-		}
-	}
-	return nil, ErrNotFound
+	return &out, nil
 }
 
 // CreateApplication creates an application from body and returns it.

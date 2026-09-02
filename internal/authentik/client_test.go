@@ -601,25 +601,47 @@ func TestListApplicationsFollowsPagination(t *testing.T) {
 	}
 }
 
-func TestGetApplicationBySlugRequestsFullList(t *testing.T) {
+func TestGetApplicationBySlugDetailRouteFound(t *testing.T) {
 	var cap capture
-	resp := `{"pagination":{"next":0,"previous":0,"count":1},"results":[{"pk":"app-uuid","slug":"wiki","name":"Wiki","provider":7}]}`
+	// The detail route returns the full Application object, not a paginated list.
+	// It is NOT access-filtered, so it resolves an app the token's user may not
+	// launch, which is what kills the duplicate-create on a scoped token.
+	resp := `{"pk":"app-uuid","slug":"grp","name":"Group App","provider":7}`
 	cli := newTestClient(t, &cap, 200, resp)
 
-	app, err := cli.GetApplicationBySlug(context.Background(), "wiki")
+	app, err := cli.GetApplicationBySlug(context.Background(), "grp")
 	if err != nil {
 		t.Fatalf("GetApplicationBySlug: %v", err)
 	}
-	if app.Slug != "wiki" {
-		t.Errorf("slug = %q", app.Slug)
+	if app.Slug != "grp" || app.Provider == nil || *app.Provider != 7 {
+		t.Errorf("app = %+v", app)
 	}
-	// The access-filter escape hatch must be on the query, or the endpoint hides
-	// applications whose policy the token's user does not pass.
-	if !strings.Contains(cap.query, "superuser_full_list=true") {
-		t.Errorf("query = %q, want superuser_full_list=true", cap.query)
+	if cap.method != http.MethodGet {
+		t.Errorf("method = %q, want GET", cap.method)
 	}
-	if !strings.Contains(cap.query, "slug=wiki") {
-		t.Errorf("query = %q, want slug=wiki", cap.query)
+	// The slug is the REST lookup field: it must be on the PATH, not a query
+	// filter, or the request hits the access-filtered list again.
+	if cap.path != "/api/v3/core/applications/grp/" {
+		t.Errorf("path = %q, want the slug detail route", cap.path)
+	}
+	if strings.Contains(cap.query, "superuser_full_list") {
+		t.Errorf("query = %q, must not carry the superuser flag any more", cap.query)
+	}
+}
+
+func TestGetApplicationBySlugDetailRouteNotFound(t *testing.T) {
+	var cap capture
+	// A 404 on the detail route unwraps to the ErrNotFound sentinel, so reconcile
+	// treats a genuinely absent application as absent (and creates it) rather than
+	// as an error.
+	cli := newTestClient(t, &cap, 404, `{"detail":"Not found."}`)
+
+	_, err := cli.GetApplicationBySlug(context.Background(), "missing")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	if cap.path != "/api/v3/core/applications/missing/" {
+		t.Errorf("path = %q, want the slug detail route", cap.path)
 	}
 }
 
