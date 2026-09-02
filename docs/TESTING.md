@@ -139,6 +139,32 @@ Each of these was driven with the real `aboard` binary against the real
    `EntityDescriptor` IdP metadata document. A second reconcile is a clean no-op:
    the provider pk is stable, still one provider, one binding, `sticky=0`.
 
+11. **Group-claim delivery** (default on). Proven end-to-end across all three
+   provider types:
+   - **Error path first.** With no `groups` scope mapping in the fresh Authentik
+     (verified: the seven managed scope mappings do not include `groups`), the
+     OIDC app reconcile raises `groups-scope-missing`, `sticky=1`, and writes NO
+     provider, the message pointing at `aboard render --blueprint`.
+   - **render --blueprint applies cleanly.** `aboard render --blueprint`'s own
+     output, POSTed inline via `POST /api/v3/managed/blueprints/` and applied,
+     reconciles with `status: successful`, creating the `groups` scope mapping
+     (`scope_name: groups`, the standard `ak_groups.all()` expression) and the
+     referenced groups. The model names are exact: `authentik_core.group`,
+     `authentik_providers_oauth2.scopemapping`.
+   - **OIDC attaches by name.** The next pass reconciles the OIDC app clean, and
+     `GET /api/v3/providers/oauth2/{pk}/` shows `property_mappings` is exactly
+     `{openid, email, profile, groups}`, the groups scope alongside the always-
+     present three. Idempotent: a second pass is `sticky=0` and the mapping count
+     stays 4, no duplicates.
+   - **SAML is a no-op that holds.** The `<slug> (aboard)` SAML provider already
+     carries "authentik default SAML Mapping: Groups" among its managed defaults,
+     confirmed by reading the provider's `property_mappings` back.
+   - **Forward-auth verify-and-surface.** A throwaway container carrying the
+     shared middleware definition WITHOUT `X-authentik-groups` in
+     `authResponseHeaders` makes every claim-on forward-auth app raise the
+     `groups-header-missing` WARNING in `aboard status`; recreating it WITH the
+     header clears the warning to zero. aboard never mutates Traefik.
+
 ## The adoption empirical result (must-verify)
 
 The architecture flagged that adoption's create-a-marked-provider-and-repoint
