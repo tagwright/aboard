@@ -1,0 +1,6 @@
+.git
+/aboard
+/dist
+*.test
+*.out
+*.prof

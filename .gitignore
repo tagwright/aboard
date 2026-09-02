@@ -1,0 +1,16 @@
+# Build output
+/aboard
+/dist/
+*.exe
+*.test
+*.out
+*.prof
+
+# Local dev
+.env
+*.local
+
+# Never commit a resolved secret or an Authentik API token
+*.key
+/run/
+/secrets/
