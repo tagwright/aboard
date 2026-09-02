@@ -45,25 +45,26 @@ type ownership struct {
 }
 
 // resolveOwnership decides whether app is aboard-owned. It looks up the
-// aboard-named provider derived from the app's slug in the OAuth2 table first
-// (so a live-credential OIDC provider is recognized as such) and then the proxy
-// table, and reports ownership only when the app points at the provider it
-// found. A lookup that merely finds nothing (ErrNotFound) is not an error here;
-// any other error is returned so a transport failure is never mistaken for
-// "not owned".
+// aboard-named provider derived from the app's slug and reports ownership only
+// when the app points at the provider it found. A lookup that merely finds
+// nothing (ErrNotFound) is not an error here; any other error is returned so a
+// transport failure is never mistaken for "not owned".
+//
+// The PROXY table is consulted FIRST, and this order is load-bearing, verified
+// against the live 2025.6.4 API: in Authentik a ProxyProvider is a SUBCLASS of
+// OAuth2Provider, so the /providers/oauth2/ list returns proxy providers too
+// (a forward-auth provider shows up on both endpoints). The /providers/proxy/
+// list, by contrast, returns ONLY genuine proxy providers. So a proxy is
+// identified authoritatively by the proxy endpoint, and the oauth2 endpoint is
+// consulted only when no proxy of the marker name matches, at which point a hit
+// there is a genuine OIDC provider. Checking oauth2 first would misread every
+// aboard forward-auth provider as OIDC and spuriously flag a provider-type
+// change on the next reconcile.
 func (r *Reconciler) resolveOwnership(ctx context.Context, app authentik.Application) (ownership, error) {
 	if app.Provider == nil {
 		return ownership{}, nil
 	}
 	name := providerMarkerName(app.Slug)
-
-	oauth, err := r.api.GetOAuth2ProviderByName(ctx, name)
-	if err != nil && !errors.Is(err, authentik.ErrNotFound) {
-		return ownership{}, err
-	}
-	if oauth != nil && oauth.PK == *app.Provider {
-		return ownership{owned: true, kind: spec.ProviderOIDC, providerPK: oauth.PK}, nil
-	}
 
 	proxy, err := r.api.GetProxyProviderByName(ctx, name)
 	if err != nil && !errors.Is(err, authentik.ErrNotFound) {
@@ -71,6 +72,16 @@ func (r *Reconciler) resolveOwnership(ctx context.Context, app authentik.Applica
 	}
 	if proxy != nil && proxy.PK == *app.Provider {
 		return ownership{owned: true, kind: spec.ProviderForwardAuth, providerPK: proxy.PK}, nil
+	}
+
+	oauth, err := r.api.GetOAuth2ProviderByName(ctx, name)
+	if err != nil && !errors.Is(err, authentik.ErrNotFound) {
+		return ownership{}, err
+	}
+	// A proxy provider is also returned by the oauth2 endpoint (subclass), so a
+	// hit whose pk is the proxy we already saw is NOT a genuine OIDC provider.
+	if oauth != nil && oauth.PK == *app.Provider && (proxy == nil || proxy.PK != oauth.PK) {
+		return ownership{owned: true, kind: spec.ProviderOIDC, providerPK: oauth.PK}, nil
 	}
 
 	return ownership{}, nil
