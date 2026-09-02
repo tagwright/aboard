@@ -76,6 +76,7 @@ func discoverEnabled(ctx context.Context, cfg *config.Config, lister containerLi
 		return nil, nil, err
 	}
 	fleetCallback := daemon.DetectFleetCallback(containers)
+	groupsHeader := daemon.DetectGroupsHeader(containers, cfg.Traefik.Middleware)
 
 	var (
 		apps  []appView
@@ -94,6 +95,9 @@ func discoverEnabled(ctx context.Context, cfg *config.Config, lister containerLi
 		if !discovery.HasError(issues) && cfg.Proxy == config.ProxyTraefik && sp.Provider == spec.ProviderForwardAuth {
 			vr := traefik.Verify(cfg, &sp, c.Labels, fleetCallback)
 			findings = append(findings, vr.Findings...)
+			if iss := traefik.VerifyGroupsDelivery(cfg, &sp, groupsHeader); iss != nil {
+				findings = append(findings, *iss)
+			}
 		}
 
 		av := appView{

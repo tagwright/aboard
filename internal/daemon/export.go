@@ -7,6 +7,7 @@ import (
 	"github.com/tagwright/core/runtime"
 
 	"github.com/tagwright/aboard/internal/discovery"
+	"github.com/tagwright/aboard/internal/traefik"
 )
 
 // The CLI's read-only passes (validate, render, status, prune) reuse the exact
@@ -28,4 +29,11 @@ func IsSelfExcluded(c runtime.Container) bool { return isSelfExcluded(c) }
 // outpost callback router, which satisfies the mixed-host callback rule fleet-wide.
 func DetectFleetCallback(containers []runtime.Container) bool {
 	return detectFleetCallback(containers)
+}
+
+// DetectGroupsHeader reports whether the forward-auth middleware definition among
+// the containers carries X-authentik-groups in its authResponseHeaders, the
+// fleet scan the status pass reuses so it agrees with the daemon.
+func DetectGroupsHeader(containers []runtime.Container, middlewareRef string) traefik.GroupsHeaderState {
+	return detectGroupsHeader(containers, middlewareRef)
 }

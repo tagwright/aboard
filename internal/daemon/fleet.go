@@ -41,6 +41,21 @@ func detectFleetCallback(containers []runtime.Container) bool {
 	return false
 }
 
+// detectGroupsHeader scans every container's labels for the forward-auth
+// middleware definition (cfg.Traefik.Middleware) and reports whether its
+// authResponseHeaders carries X-authentik-groups. Group delivery under
+// forward-auth rides that header in the SHARED middleware, which lives on the
+// traefik container, so like fleet-callback detection this is a once-per-listing
+// fleet scan whose result the per-container verify consumes. aboard only reads
+// it and surfaces a finding, it never mutates Traefik.
+func detectGroupsHeader(containers []runtime.Container, middlewareRef string) traefik.GroupsHeaderState {
+	sets := make([]map[string]string, 0, len(containers))
+	for _, c := range containers {
+		sets = append(sets, c.Labels)
+	}
+	return traefik.DetectGroupsHeader(sets, middlewareRef)
+}
+
 // authentikImageMarkers are substrings of an Authentik container's image that
 // mark it as the IdP aboard drives. aboard never enrolls the IdP it drives.
 var authentikImageMarkers = []string{"goauthentik", "authentik"}

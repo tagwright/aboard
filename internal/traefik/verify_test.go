@@ -276,3 +276,80 @@ func sameSet(a, b []string) bool {
 
 // ensure discovery.Issue stays the finding type (compile-time guard).
 var _ = []discovery.Issue(nil)
+
+// fleetGroupsHeader is a minimal middleware definition carrying the full
+// authResponseHeaders set (with X-authentik-groups), as aboard render --setup
+// emits and the fleet traefik container runs.
+func fleetGroupsHeader() map[string]string {
+	return map[string]string{
+		"traefik.http.middlewares.authentik.forwardauth.authResponseHeaders": "X-authentik-username,X-authentik-groups,X-authentik-email",
+	}
+}
+
+// fleetNoGroupsHeader is a middleware definition whose authResponseHeaders omits
+// the groups header: a real misconfiguration that starves an app of groups.
+func fleetNoGroupsHeader() map[string]string {
+	return map[string]string{
+		"traefik.http.middlewares.authentik.forwardauth.authResponseHeaders": "X-authentik-username,X-authentik-email",
+	}
+}
+
+func TestDetectGroupsHeader(t *testing.T) {
+	// Present: the middleware definition carries the groups header.
+	if got := DetectGroupsHeader([]map[string]string{fleetGroupsHeader()}, "authentik@docker"); got != GroupsHeaderPresent {
+		t.Errorf("present: got %v, want GroupsHeaderPresent", got)
+	}
+	// Absent: found, but the groups header is missing.
+	if got := DetectGroupsHeader([]map[string]string{fleetNoGroupsHeader()}, "authentik@docker"); got != GroupsHeaderAbsent {
+		t.Errorf("absent: got %v, want GroupsHeaderAbsent", got)
+	}
+	// Unknown: the middleware definition is nowhere in the scanned labels (it may
+	// live in Traefik file config aboard cannot read).
+	if got := DetectGroupsHeader([]map[string]string{whoamiWholeHost()}, "authentik@docker"); got != GroupsHeaderUnknown {
+		t.Errorf("unknown: got %v, want GroupsHeaderUnknown", got)
+	}
+	// The middleware name is the bare part before @provider, and header matching
+	// is case-insensitive.
+	mixedCase := map[string]string{
+		"traefik.http.middlewares.authentik.forwardauth.authResponseHeaders": "x-authentik-groups",
+	}
+	if got := DetectGroupsHeader([]map[string]string{mixedCase}, "authentik@docker"); got != GroupsHeaderPresent {
+		t.Errorf("case-insensitive: got %v, want GroupsHeaderPresent", got)
+	}
+}
+
+func TestVerifyGroupsDelivery(t *testing.T) {
+	cfg := testCfg()
+	sp := faSpec("whoami", "whoami.example.com")
+	sp.GroupsClaim = true
+
+	// Absent header + claim on: a warning finding, not a sticky error.
+	iss := VerifyGroupsDelivery(cfg, sp, GroupsHeaderAbsent)
+	if iss == nil {
+		t.Fatal("a claim-on forward-auth app with the header absent must draw a finding")
+	}
+	if iss.Code != CodeGroupsHeaderMissing || iss.Severity != discovery.SeverityWarning {
+		t.Errorf("finding = %s/%v, want %s/warning", iss.Code, iss.Severity, CodeGroupsHeaderMissing)
+	}
+
+	// Present, and Unknown, both draw nothing.
+	if VerifyGroupsDelivery(cfg, sp, GroupsHeaderPresent) != nil {
+		t.Error("a present header must draw no finding")
+	}
+	if VerifyGroupsDelivery(cfg, sp, GroupsHeaderUnknown) != nil {
+		t.Error("an unresolvable middleware (Unknown) must draw no finding")
+	}
+
+	// Claim opted out: nothing, even with the header absent.
+	sp.GroupsClaim = false
+	if VerifyGroupsDelivery(cfg, sp, GroupsHeaderAbsent) != nil {
+		t.Error("claim off must draw no finding")
+	}
+
+	// Not a forward-auth provider: nothing (OIDC/SAML deliver groups their own way).
+	sp.GroupsClaim = true
+	sp.Provider = spec.ProviderOIDC
+	if VerifyGroupsDelivery(cfg, sp, GroupsHeaderAbsent) != nil {
+		t.Error("a non-forward-auth provider must draw no groups-header finding")
+	}
+}
