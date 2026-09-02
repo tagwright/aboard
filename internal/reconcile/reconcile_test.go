@@ -227,6 +227,11 @@ func TestReconcileSAMLCreateNoAttachNoSecret(t *testing.T) {
 	if body.SigningKp != "cert-1" {
 		t.Errorf("signing_kp = %q, want cert-1", body.SigningKp)
 	}
+	// A signing keypair is always set, so a sign flag must be sent true or
+	// Authentik rejects the create.
+	if body.SignAssertion == nil || !*body.SignAssertion {
+		t.Error("sign_assertion must be sent true when a signing keypair is set")
+	}
 	// Managed defaults (pm-email, pm-name) ALWAYS attached, plus the named extra.
 	want := map[string]bool{"pm-email": true, "pm-name": true, "pm-roles": true}
 	if len(body.PropertyMappings) != 3 {

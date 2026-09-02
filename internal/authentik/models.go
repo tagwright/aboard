@@ -207,7 +207,15 @@ type SAMLProviderRequest struct {
 	Issuer            string   `json:"issuer,omitempty"`
 	SpBinding         string   `json:"sp_binding,omitempty"`
 	SigningKp         string   `json:"signing_kp,omitempty"`
-	PropertyMappings  []string `json:"property_mappings,omitempty"`
+	// SignAssertion and SignResponse are pointers so an explicit false is
+	// sendable. Authentik requires that when a signing keypair is set at least one
+	// of them is true (verified live: a POST with a signing_kp and both false is a
+	// 400), so aboard, which always resolves a signing keypair, always sends
+	// sign_assertion true. They are security-relevant fields aboard manages, never
+	// left to a server default.
+	SignAssertion    *bool    `json:"sign_assertion,omitempty"`
+	SignResponse     *bool    `json:"sign_response,omitempty"`
+	PropertyMappings []string `json:"property_mappings,omitempty"`
 }
 
 // SAMLMetadata is the response of the SAML provider metadata endpoint: the IdP

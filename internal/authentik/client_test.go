@@ -261,6 +261,15 @@ func TestCreateSAMLProviderBody(t *testing.T) {
 	if sent["acs_url"] != "https://sp.example.com/acs" || sent["sp_binding"] != "post" || sent["signing_kp"] != "cert-uuid" {
 		t.Errorf("sent body = %v", sent)
 	}
+	// A signing keypair is set, so at least one sign flag must be sent true, or
+	// Authentik rejects the create (verified live).
+	sa := true
+	if sent["sign_assertion"] != nil {
+		sa = sent["sign_assertion"].(bool)
+	}
+	if !sa {
+		t.Errorf("sign_assertion must be sent true when a signing keypair is set, body = %q", cap.body)
+	}
 	// issuer is unset here and its request schema forbids an empty string, so
 	// omitempty must keep it out of the body (an unset issuer means the default).
 	if _, present := sent["issuer"]; present {
