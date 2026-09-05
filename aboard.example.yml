@@ -39,6 +39,16 @@ oidc:
 # then writes aboard.host explicitly on each container).
 proxy: traefik
 
+# Container engine aboard drives, mirrors ABOARD_RUNTIME. `docker` (the default)
+# or `podman`, both over a Docker Engine API-compatible socket.
+runtime: docker
+
+# API socket path override for the selected runtime, mirrors ABOARD_SOCKET.
+# Leave unset for the per-runtime default (/var/run/docker.sock for docker, the
+# rootful /run/podman/podman.sock for podman). Set it to point a rootless podman
+# deploy at $XDG_RUNTIME_DIR/podman/podman.sock.
+# socket: /run/podman/podman.sock
+
 traefik:
   # The one shared forward-auth middleware name, defined once for the whole
   # fleet. There is deliberately no per-container override.
