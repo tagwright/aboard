@@ -212,9 +212,9 @@ tool: berm delivers aboard's Authentik API token and any OIDC client secret into
 the container as files, and aboard consumes them from a path, holding no key of
 its own.
 
-The shipped binary wires the Docker runtime, at `/var/run/docker.sock`. The
-daemon's runtime seam is the shared suite one, which also has a Podman
-implementation, but the current CLI constructs the Docker runtime only.
+Aboard drives Docker (the default) or Podman through that shared runtime
+abstraction, selected with `runtime:` in `aboard.yml` or `ABOARD_RUNTIME`. See
+the Podman section of [docs/DEPLOY.md](docs/DEPLOY.md) for the compose changes.
 
 ## Status
 
@@ -225,8 +225,8 @@ pre-existing objects, the orphan and prune model, and the CLI (`daemon`,
 `validate`, `status`, `prune`, `render`, `version`) all work end to end, proven
 against a live Authentik. What to keep in mind:
 
-- The shipped CLI wires the Docker runtime only. The runtime seam is
-  Podman-capable in `core`, but nothing in aboard selects it yet.
+- Docker and Podman are both selectable (`runtime:` / `ABOARD_RUNTIME`), each
+  over a Docker Engine API-compatible socket through `core`.
 - Removal keeps objects as orphans (the `keep` behavior). `detach` and `delete`
   on removal are reserved, not built.
 

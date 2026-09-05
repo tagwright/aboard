@@ -41,12 +41,54 @@ explicit `command` above is only spelling out the config path. Aboard must be
 able to reach the Authentik server over the container network, so run it on the
 same Docker network as authentik-server (or one that routes to it).
 
-The socket path is `/var/run/docker.sock`, fixed. The shipped binary wires the
-Docker runtime only. The daemon's runtime seam is the shared suite one, which
-has a Podman implementation too, but the current CLI does not select it.
+The socket path above is the Docker default, `/var/run/docker.sock`. Aboard can
+also drive Podman: see the Podman section below.
 
 Aboard never enrolls the Authentik containers or its own container, so it is
 safe to run in the same compose project as authentik.
+
+## Podman
+
+Aboard drives Podman through the same Docker Engine API-compatible socket the
+Docker adapter uses, so a Podman deploy is the Docker compose above with two
+changes: select the podman runtime and mount the podman socket in place of the
+docker one.
+
+```yaml
+services:
+  aboard:
+    image: ghcr.io/tagwright/aboard:latest
+    restart: unless-stopped
+    environment:
+      - ABOARD_RUNTIME=podman
+    volumes:
+      - /run/podman/podman.sock:/run/podman/podman.sock:ro
+      - ./aboard.yml:/etc/aboard/aboard.yml:ro
+      - /run/aboard/secrets:/run/aboard/secrets:ro
+    command: ["daemon", "--config", "/etc/aboard/aboard.yml"]
+```
+
+`ABOARD_RUNTIME=podman` selects the Podman adapter. With no `ABOARD_SOCKET` set,
+aboard dials the rootful system-service socket `/run/podman/podman.sock`, which
+is what `podman.socket` enabled at the system level exposes. Enable it with
+`systemctl enable --now podman.socket`.
+
+A rootless Podman deploy exposes its socket under the user's runtime directory
+at `$XDG_RUNTIME_DIR/podman/podman.sock` instead. Point aboard at it by setting
+`ABOARD_SOCKET` to that path (and mounting it read-only in place of the rootful
+one), for example:
+
+```yaml
+    environment:
+      - ABOARD_RUNTIME=podman
+      - ABOARD_SOCKET=/run/user/1000/podman/podman.sock
+    volumes:
+      - /run/user/1000/podman/podman.sock:/run/user/1000/podman/podman.sock:ro
+```
+
+The `group_add` docker-gid dance the Docker deploy needs does not apply to the
+rootless podman socket, which is owned by the invoking user. As with Docker,
+aboard reads the socket and never writes it, so mount it read-only.
 
 ## aboard.yml
 
@@ -92,6 +134,17 @@ saml:
 # aboard.host explicitly on each container).
 proxy: traefik
 
+# Container engine aboard drives, mirrors ABOARD_RUNTIME. `docker` (the default)
+# or `podman`, both over a Docker Engine API-compatible socket. See the Podman
+# section above.
+runtime: docker
+
+# API socket path override for the selected runtime, mirrors ABOARD_SOCKET.
+# Leave unset for the per-runtime default (/var/run/docker.sock for docker, the
+# rootful /run/podman/podman.sock for podman). Set it to point a rootless podman
+# deploy at $XDG_RUNTIME_DIR/podman/podman.sock.
+# socket: /run/podman/podman.sock
+
 traefik:
   # The one shared forward-auth middleware name, defined once for the whole
   # fleet. There is deliberately no per-container override.
@@ -121,6 +174,14 @@ behavior. They are env, not `aboard.yml` fields:
   (empty) and alerting. Default off, so a missing group is a validation error.
 - `ABOARD_PROXY`: mirrors `proxy:` in `aboard.yml`. When set it overlays the
   file value.
+- `ABOARD_RUNTIME`: mirrors `runtime:` in `aboard.yml`, the container engine
+  aboard drives: `docker` or `podman`. When set it overlays the file value.
+  Default `docker`.
+- `ABOARD_SOCKET`: mirrors `socket:` in `aboard.yml`, the API socket path for
+  the selected runtime. When set it overlays the file value. Unset resolves the
+  per-runtime default: `/var/run/docker.sock` for docker, the rootful
+  `/run/podman/podman.sock` for podman. Set this to point a rootless podman
+  deploy at `$XDG_RUNTIME_DIR/podman/podman.sock`.
 - `ABOARD_DIGEST_SCHEDULE`: the daily beacon digest cadence. Default `daily`.
 
 Only the literal string `true` opts a boolean global in. Anything else,
