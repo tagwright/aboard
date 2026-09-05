@@ -14,3 +14,7 @@
 *.key
 /run/
 /secrets/
+
+# Internal docs: gitignored here, versioned centrally in the projects-docs repo
+/CLAUDE.md
+/CHARTER.md
