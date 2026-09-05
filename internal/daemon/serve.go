@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/tagwright/core/runtime"
-
 	"github.com/tagwright/aboard/internal/authentik"
 	"github.com/tagwright/aboard/internal/config"
 	"github.com/tagwright/aboard/internal/reconcile"
@@ -48,8 +46,12 @@ func Serve(ctx context.Context, configPath string, logger *slog.Logger) error {
 		return fmt.Errorf("daemon: build notifier: %w", err)
 	}
 
-	// The Docker socket, read-only. aboard reads the socket, it never writes it.
-	rt := runtime.NewDocker(DefaultDockerSocket)
+	// The container socket the config selects (docker or podman), read-only.
+	// aboard reads the socket, it never writes it.
+	rt, err := BuildRuntime(cfg)
+	if err != nil {
+		return err
+	}
 	defer rt.Close()
 
 	d, err := New(Config{

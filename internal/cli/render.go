@@ -80,7 +80,10 @@ edits Traefik configuration or Authentik identity objects, these are for you.
 				return nil
 			}
 
-			rt := newRuntime()
+			rt, err := newRuntime(cfg)
+			if err != nil {
+				return err
+			}
 			defer rt.Close()
 			if blueprintFlag {
 				return runRenderBlueprint(cmd.Context(), cfg, rt, u)

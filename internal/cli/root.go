@@ -52,8 +52,8 @@ import (
 var cfgPath string
 
 // containerLister is the read-only slice of the runtime the CLI's list-and-audit
-// passes need. *runtime.DockerRuntime satisfies it, and a test injects a fake, so
-// the commands' logic runs without a socket.
+// passes need. *runtime.DockerRuntime and *runtime.PodmanRuntime both satisfy it,
+// and a test injects a fake, so the commands' logic runs without a socket.
 type containerLister interface {
 	List(ctx context.Context) ([]runtime.Container, error)
 }
@@ -70,6 +70,7 @@ type orphanReconciler interface {
 // Compile-time proof the real types satisfy the seams.
 var (
 	_ containerLister  = (*runtime.DockerRuntime)(nil)
+	_ containerLister  = (*runtime.PodmanRuntime)(nil)
 	_ orphanReconciler = (*reconcile.Reconciler)(nil)
 )
 
@@ -164,10 +165,12 @@ func loadConfig() (*config.Config, error) {
 	return cfg, nil
 }
 
-// newRuntime opens the read-only container socket. aboard reads the socket, it
+// newRuntime opens the read-only container socket the config selects (docker or
+// podman), through the same daemon.BuildRuntime the daemon uses so the CLI and
+// daemon can never diverge on runtime selection. aboard reads the socket, it
 // never writes it. The caller closes it.
-func newRuntime() *runtime.DockerRuntime {
-	return runtime.NewDocker(daemon.DefaultDockerSocket)
+func newRuntime(cfg *config.Config) (runtime.Runtime, error) {
+	return daemon.BuildRuntime(cfg)
 }
 
 // newReconciler builds the Authentik-backed reconciler status and prune drive: the

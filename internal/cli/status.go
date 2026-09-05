@@ -38,7 +38,10 @@ reads Authentik but never writes.`,
 			if err != nil {
 				return err
 			}
-			rt := newRuntime()
+			rt, err := newRuntime(cfg)
+			if err != nil {
+				return err
+			}
 			defer rt.Close()
 
 			rec, err := newReconciler(cfg)
