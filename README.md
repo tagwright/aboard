@@ -93,8 +93,17 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./aboard.yml:/etc/aboard/aboard.yml:ro
       - /run/aboard/secrets:/run/aboard/secrets:ro
+    # The image runs as a distroless nonroot uid (65532), which is not in the
+    # host docker group, so it cannot read the socket without help. Add the HOST
+    # docker gid (host-specific: `stat -c %g /var/run/docker.sock`).
+    group_add:
+      - "139"
     command: ["daemon", "--config", "/etc/aboard/aboard.yml"]
 ```
+
+The `group_add` line is required: aboard's image is nonroot (uid 65532), and the
+Docker socket is `root:docker` mode 660, so the daemon needs the host docker gid
+added to read it. Find the gid with `stat -c %g /var/run/docker.sock`.
 
 `aboard.yml` holds structure, not secrets, so it is safe to commit. The minimum
 is the internal Authentik endpoint and the NAME of the API token:
