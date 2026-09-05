@@ -60,8 +60,9 @@ import (
 // enough that a real change reconciles promptly.
 const DefaultDebounceWindow = 750 * time.Millisecond
 
-// DefaultDockerSocket is the runtime socket the CLI-facing Serve dials when no
-// other is configured. aboard reads the socket, it never writes to it.
+// DefaultDockerSocket is the socket BuildRuntime dials for runtime "docker" when
+// no socket override is configured. aboard reads the socket, it never writes to
+// it. The podman counterpart is DefaultPodmanSocket in runtime.go.
 const DefaultDockerSocket = "/var/run/docker.sock"
 
 // Runtime is the narrow slice of github.com/tagwright/core's runtime the daemon

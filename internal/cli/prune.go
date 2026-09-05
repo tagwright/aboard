@@ -59,7 +59,10 @@ Authentik object has no aboard ownership marker and teardown refuses to touch it
 			if err != nil {
 				return err
 			}
-			rt := newRuntime()
+			rt, err := newRuntime(cfg)
+			if err != nil {
+				return err
+			}
 			defer rt.Close()
 
 			rec, err := newReconciler(cfg)

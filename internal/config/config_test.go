@@ -27,6 +27,7 @@ func clearGlobalEnv(t *testing.T) {
 	for _, k := range []string{
 		"ABOARD_SECRETS_DIR", "ABOARD_CREATE_GROUPS", "ABOARD_PROXY",
 		"ABOARD_DIGEST_SCHEDULE", "ABOARD_CONFIG",
+		"ABOARD_RUNTIME", "ABOARD_SOCKET",
 	} {
 		t.Setenv(k, "")
 		os.Unsetenv(k)
@@ -60,6 +61,8 @@ authentik:
 		{"signing key", cfg.OIDC.SigningKey, DefaultSigningKey},
 		{"groups scope", cfg.OIDC.GroupsScope, DefaultGroupsScope},
 		{"proxy", cfg.Proxy, DefaultProxy},
+		{"runtime", cfg.Runtime, DefaultRuntime},
+		{"socket", cfg.Socket, ""},
 		{"middleware", cfg.Traefik.Middleware, DefaultMiddleware},
 		{"traefik version", cfg.Traefik.Version, DefaultTraefikVersion},
 		{"globals secrets dir", cfg.Globals.SecretsDir, DefaultSecretsDir},
@@ -146,6 +149,9 @@ proxy: traefik
 	t.Setenv("ABOARD_DIGEST_SCHEDULE", "hourly")
 	// ABOARD_PROXY mirrors proxy: and overlays the yaml value.
 	t.Setenv("ABOARD_PROXY", "none")
+	// ABOARD_RUNTIME and ABOARD_SOCKET mirror runtime: and socket:.
+	t.Setenv("ABOARD_RUNTIME", "podman")
+	t.Setenv("ABOARD_SOCKET", "/run/user/1000/podman/podman.sock")
 
 	cfg, err := Load(path)
 	if err != nil {
@@ -166,6 +172,12 @@ proxy: traefik
 	}
 	if cfg.Proxy != ProxyNone {
 		t.Errorf("ABOARD_PROXY did not overlay proxy:, got %q", cfg.Proxy)
+	}
+	if cfg.Runtime != RuntimePodman {
+		t.Errorf("ABOARD_RUNTIME did not overlay runtime:, got %q", cfg.Runtime)
+	}
+	if cfg.Socket != "/run/user/1000/podman/podman.sock" {
+		t.Errorf("ABOARD_SOCKET did not overlay socket:, got %q", cfg.Socket)
 	}
 }
 
@@ -207,6 +219,7 @@ func TestValidate(t *testing.T) {
 		c := &Config{
 			Authentik: Authentik{URL: "http://authentik-server:9000", Token: "aboard-api-token"},
 			Proxy:     ProxyTraefik,
+			Runtime:   RuntimeDocker,
 			Traefik:   Traefik{Version: 3},
 		}
 		return c
@@ -219,6 +232,9 @@ func TestValidate(t *testing.T) {
 	}{
 		{"valid traefik", func(*Config) {}, false},
 		{"valid none proxy", func(c *Config) { c.Proxy = ProxyNone }, false},
+		{"valid podman runtime", func(c *Config) { c.Runtime = RuntimePodman }, false},
+		{"bad runtime", func(c *Config) { c.Runtime = "containerd" }, true},
+		{"empty runtime", func(c *Config) { c.Runtime = "" }, true},
 		{"missing url", func(c *Config) { c.Authentik.URL = "" }, true},
 		{"missing token", func(c *Config) { c.Authentik.Token = "" }, true},
 		{"bad proxy", func(c *Config) { c.Proxy = "caddy" }, true},

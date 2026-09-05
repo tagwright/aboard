@@ -62,6 +62,17 @@ const (
 
 	// DefaultProxy is the proxy fallback.
 	DefaultProxy = ProxyTraefik
+
+	// RuntimeDocker and RuntimePodman are the two legal runtime values: the
+	// container engine aboard drives, read-only, to discover and watch the
+	// fleet. Both talk a Docker Engine API-compatible socket through
+	// github.com/tagwright/core's runtime abstraction, so the only real
+	// difference is the socket path and a compose-label fallback.
+	RuntimeDocker = "docker"
+	RuntimePodman = "podman"
+
+	// DefaultRuntime is the runtime fallback.
+	DefaultRuntime = RuntimeDocker
 )
 
 // DefaultConfigPath is where aboard looks for aboard.yml when ABOARD_CONFIG is
@@ -144,6 +155,15 @@ type Globals struct {
 	// DigestSchedule is ABOARD_DIGEST_SCHEDULE: the daily digest cadence.
 	// Default DefaultDigestSchedule.
 	DigestSchedule string
+
+	// Runtime is ABOARD_RUNTIME: mirrors aboard.yml runtime:. When set it
+	// overlays the yaml value (see Load). Empty means "not set in the
+	// environment".
+	Runtime string
+
+	// Socket is ABOARD_SOCKET: mirrors aboard.yml socket:. When set it overlays
+	// the yaml value (see Load). Empty means "not set in the environment".
+	Socket string
 }
 
 // Config is a parsed aboard.yml plus the loaded ABOARD_* globals.
@@ -156,6 +176,19 @@ type Config struct {
 	Proxy     string    `yaml:"proxy"`
 	Traefik   Traefik   `yaml:"traefik"`
 	Defaults  Defaults  `yaml:"defaults"`
+
+	// Runtime selects the container engine aboard drives: "docker" (the
+	// default) or "podman". Overlaid by ABOARD_RUNTIME. Both talk a
+	// Docker Engine API-compatible socket through github.com/tagwright/core.
+	Runtime string `yaml:"runtime"`
+
+	// Socket is the API socket path override for the selected runtime. Empty
+	// means "resolve the per-runtime conventional default" (see the daemon's
+	// BuildRuntime): /var/run/docker.sock for docker, the rootful
+	// /run/podman/podman.sock for podman. Overlaid by ABOARD_SOCKET, which is
+	// how a rootless Podman operator points aboard at
+	// $XDG_RUNTIME_DIR/podman/podman.sock.
+	Socket string `yaml:"socket"`
 
 	// Globals holds the ABOARD_* environment globals, loaded from the
 	// environment, not the yaml body.
@@ -200,6 +233,15 @@ func Load(path string) (*Config, error) {
 		cfg.Proxy = cfg.Globals.Proxy
 	}
 
+	// ABOARD_RUNTIME and ABOARD_SOCKET mirror runtime: and socket:, overlaying
+	// the yaml values before defaults fill an otherwise-empty runtime.
+	if cfg.Globals.Runtime != "" {
+		cfg.Runtime = cfg.Globals.Runtime
+	}
+	if cfg.Globals.Socket != "" {
+		cfg.Socket = cfg.Globals.Socket
+	}
+
 	cfg.applyDefaults()
 	return &cfg, nil
 }
@@ -229,6 +271,12 @@ func (c *Config) applyDefaults() {
 	if c.Proxy == "" {
 		c.Proxy = DefaultProxy
 	}
+	if c.Runtime == "" {
+		c.Runtime = DefaultRuntime
+	}
+	// Socket is intentionally left empty when unset: the daemon's BuildRuntime
+	// resolves the per-runtime conventional default so the fallback stays in
+	// one place next to the adapter constructors.
 	if c.Traefik.Middleware == "" {
 		c.Traefik.Middleware = DefaultMiddleware
 	}
@@ -247,6 +295,12 @@ func (c *Config) Validate() error {
 	case ProxyTraefik, ProxyNone:
 	default:
 		return fmt.Errorf("config: proxy must be %q or %q, got %q", ProxyTraefik, ProxyNone, c.Proxy)
+	}
+
+	switch c.Runtime {
+	case RuntimeDocker, RuntimePodman:
+	default:
+		return fmt.Errorf("config: runtime must be %q or %q, got %q", RuntimeDocker, RuntimePodman, c.Runtime)
 	}
 
 	if c.Authentik.URL == "" {
@@ -273,6 +327,8 @@ func loadGlobals() Globals {
 		CreateGroups:   boolEnv("ABOARD_CREATE_GROUPS"),
 		Proxy:          os.Getenv("ABOARD_PROXY"),
 		DigestSchedule: DefaultDigestSchedule,
+		Runtime:        os.Getenv("ABOARD_RUNTIME"),
+		Socket:         os.Getenv("ABOARD_SOCKET"),
 	}
 	if g.SecretsDir == "" {
 		g.SecretsDir = DefaultSecretsDir

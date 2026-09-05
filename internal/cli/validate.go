@@ -40,7 +40,10 @@ nothing. Exit status is nonzero if any container has an error.`,
 			if err != nil {
 				return err
 			}
-			rt := newRuntime()
+			rt, err := newRuntime(cfg)
+			if err != nil {
+				return err
+			}
 			defer rt.Close()
 
 			hasError, err := runValidate(cmd.Context(), cfg, rt, newUI(cmd.OutOrStdout()))
