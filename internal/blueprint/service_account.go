@@ -50,6 +50,11 @@ var readPermissions = []string{
 	"authentik_core.view_group",
 	"authentik_core.view_propertymapping",
 	"authentik_providers_saml.view_samlpropertymapping",
+	// The OIDC scope-mapping subclass perm, REQUIRED for the OIDC scope-mapping
+	// lookup GET /propertymappings/provider/scope/. Same base-vs-subclass gotcha
+	// as view_provider: the base view_propertymapping does NOT cover it, so
+	// without this an OIDC reconcile's scope-mapping lookup returns 403.
+	"authentik_providers_oauth2.view_scopemapping",
 }
 
 // writePermissions is aboard's minimal WRITE permission set: create/change/delete

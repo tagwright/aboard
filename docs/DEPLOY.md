@@ -276,6 +276,7 @@ Read permissions (all global):
 | `authentik_crypto.view_certificatekeypair` | Look up the OIDC and SAML signing keys by name. |
 | `authentik_core.view_group` | Read the groups your labels bind. |
 | `authentik_core.view_propertymapping` | Look up the OIDC groups scope mapping by name. |
+| `authentik_providers_oauth2.view_scopemapping` | REQUIRED for the OIDC scope-mapping lookup `GET /propertymappings/provider/scope/` (subclass model perm, which the base `view_propertymapping` does not cover). Without it OIDC enrollment's scope-mapping lookup returns 403. |
 | `authentik_providers_saml.view_samlpropertymapping` | Look up the SAML attribute mappings by name. |
 
 Write permissions (all global):
