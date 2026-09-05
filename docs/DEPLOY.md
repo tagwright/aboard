@@ -19,8 +19,22 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./aboard.yml:/etc/aboard/aboard.yml:ro
       - /run/aboard/secrets:/run/aboard/secrets:ro
+    # aboard's image runs as a distroless NONROOT uid (65532), which is not in
+    # the host docker group, so it cannot read /var/run/docker.sock (root:docker,
+    # mode 660) on its own. Add the HOST docker group by gid so it can. The gid
+    # is host-specific: find yours with `stat -c %g /var/run/docker.sock` and
+    # replace the value below.
+    group_add:
+      - "139"
     command: ["daemon", "--config", "/etc/aboard/aboard.yml"]
 ```
+
+The `group_add` line is not optional on a nonroot deploy. aboard runs as uid
+65532 with no host group membership, and the Docker socket is owned
+`root:docker` mode 660, so without the host docker gid added the daemon cannot
+open the socket and exits. The gid is host-specific: read it with
+`stat -c %g /var/run/docker.sock` and use that number. Root deployments do not
+need it, but the shipped image is nonroot by design, so keep this line.
 
 The image's entrypoint is `aboard` and its default command is `daemon`, so the
 explicit `command` above is only spelling out the config path. Aboard must be
