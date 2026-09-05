@@ -104,6 +104,13 @@ func TestRenderServiceAccount_RoleCarriesExactlyRequiredPerms(t *testing.T) {
 	if !strings.Contains(out, "        - authentik_core.view_provider\n") {
 		t.Errorf("role must carry authentik_core.view_provider, got:\n%s", out)
 	}
+	// ...and the OIDC scope-mapping subclass perm, which the base
+	// view_propertymapping does NOT cover and the OIDC scope-mapping lookup
+	// (GET /propertymappings/provider/scope/) needs. Same base-vs-subclass
+	// gotcha as view_provider.
+	if !strings.Contains(out, "        - authentik_providers_oauth2.view_scopemapping\n") {
+		t.Errorf("role must carry authentik_providers_oauth2.view_scopemapping, got:\n%s", out)
+	}
 
 	// ...and EXACTLY that set: count the permission list lines (six-space indent,
 	// "- " prefix) and compare to the required count. Comment lines start with
