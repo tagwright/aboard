@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/tagwright/aboard/internal/authentik"
 	"github.com/tagwright/aboard/internal/config"
@@ -54,17 +55,61 @@ func Serve(ctx context.Context, configPath string, logger *slog.Logger) error {
 	}
 	defer rt.Close()
 
-	d, err := New(Config{
+	return run(ctx, Deps{
 		Runtime:    rt,
 		Reconciler: rec,
 		Notifier:   notifier,
 		Config:     cfg,
 		Logger:     logger,
+		Clock:      time.Now,
+	})
+}
+
+// Deps carries run's collaborators. It is the testable seam (the ratified suite
+// Testing Standard), mirroring ballast's daemon.Deps: Serve builds Deps from the
+// config file and the environment, then hands off to run; a wiring test builds
+// Deps directly with fakes (a core/runtime/runtimetest Runtime, a fake
+// reconciler, a fake clock) and calls run to drive the real socket-watch and
+// reconcile loop with an injected failure, asserting it surfaces rather than
+// passing silently.
+//
+// Every field here is a collaborator the production path constructs from config
+// and a test substitutes: the runtime (the socket watch/list/inspect seam), the
+// reconciler (the Authentik driver aboard reconciles through), the notifier, and
+// the loop's clock. Config is the loaded aboard.yml run threads through to the
+// daemon. DebounceWindow and DigestSchedule are test-only overrides; Serve
+// leaves both at their zero value, so production timing is unchanged.
+type Deps struct {
+	Runtime    Runtime
+	Reconciler Reconciler
+	Notifier   Notifier
+	Config     *config.Config
+	Logger     *slog.Logger
+	Clock      func() time.Time // loop/debounce clock; nil defaults to time.Now
+
+	DebounceWindow time.Duration
+	DigestSchedule string
+}
+
+// run builds the daemon from d and drives its control loop until ctx is
+// cancelled. It is the production seam Serve hands off to and the seam a wiring
+// test drives with fakes. It is behavior-preserving: it constructs and runs
+// exactly what Serve constructed and ran inline before, now routed through Deps.
+func run(ctx context.Context, d Deps) error {
+	dmn, err := New(Config{
+		Runtime:        d.Runtime,
+		Reconciler:     d.Reconciler,
+		Notifier:       d.Notifier,
+		Config:         d.Config,
+		Logger:         d.Logger,
+		Now:            d.Clock,
+		DebounceWindow: d.DebounceWindow,
+		DigestSchedule: d.DigestSchedule,
 	})
 	if err != nil {
 		return err
 	}
-	return d.Run(ctx)
+	return dmn.Run(ctx)
 }
 
 // errRequired builds the "a X is required" construction error New returns for a
