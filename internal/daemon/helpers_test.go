@@ -8,7 +8,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/tagwright/beacon"
+	"github.com/tagwright/courier"
 	"github.com/tagwright/core/runtime"
 
 	"github.com/tagwright/aboard/internal/config"
@@ -113,10 +113,10 @@ func (f *fakeReconciler) teardowns() []string {
 // capturingNotifier records every Notification for assertions.
 type capturingNotifier struct {
 	mu    sync.Mutex
-	notes []beacon.Notification
+	notes []courier.Notification
 }
 
-func (c *capturingNotifier) Notify(_ context.Context, n beacon.Notification) error {
+func (c *capturingNotifier) Notify(_ context.Context, n courier.Notification) error {
 	c.mu.Lock()
 	c.notes = append(c.notes, n)
 	c.mu.Unlock()

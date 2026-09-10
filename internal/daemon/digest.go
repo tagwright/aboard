@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tagwright/beacon"
+	"github.com/tagwright/courier"
 
 	"github.com/tagwright/aboard/internal/reconcile"
 	"github.com/tagwright/aboard/internal/spec"
@@ -19,7 +19,7 @@ import (
 // runDigest fires the daily digest on the parsed cadence. The digest re-emits the
 // sticky errors and the orphan set until they are fixed, so a broken gate or a
 // live-credential orphan does not scroll out of the operator's attention. It is a
-// hand-composed beacon.Notification sent through the same Notify path as an
+// hand-composed courier.Notification sent through the same Notify path as an
 // immediate alert, because beacon v0.1.0 has no digest-shaped report method (its
 // Report is health telemetry); this mirrors the sibling tools' digest wiring
 // exactly rather than inventing a second notification path.
@@ -55,7 +55,7 @@ func (d *Daemon) SendDigest(ctx context.Context) {
 // level escalates by content: any sticky error or any live-credential OIDC orphan
 // is an error-level digest, a proxy-only orphan set is a warning, and a clean
 // fleet is an info heartbeat. Fields carry machine-readable counts.
-func composeDigest(sticky []stickyEntry, orphans []reconcile.Orphan, now time.Time) beacon.Notification {
+func composeDigest(sticky []stickyEntry, orphans []reconcile.Orphan, now time.Time) courier.Notification {
 	var oidc, proxy []reconcile.Orphan
 	for _, o := range orphans {
 		if o.Kind == spec.ProviderOIDC {
@@ -96,15 +96,15 @@ func composeDigest(sticky []stickyEntry, orphans []reconcile.Orphan, now time.Ti
 		b.WriteString("\nNothing to report: no sticky errors and no orphans.\n")
 	}
 
-	level := beacon.LevelInfo
+	level := courier.LevelInfo
 	switch {
 	case len(sticky) > 0 || len(oidc) > 0:
-		level = beacon.LevelError
+		level = courier.LevelError
 	case len(proxy) > 0:
-		level = beacon.LevelWarning
+		level = courier.LevelWarning
 	}
 
-	return beacon.Notification{
+	return courier.Notification{
 		Title: "aboard digest",
 		Body:  b.String(),
 		Level: level,

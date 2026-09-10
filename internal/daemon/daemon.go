@@ -45,7 +45,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tagwright/beacon"
+	"github.com/tagwright/courier"
 	"github.com/tagwright/core/runtime"
 
 	"github.com/tagwright/aboard/internal/config"
@@ -95,16 +95,16 @@ type Reconciler interface {
 // Notifier is the beacon seam: immediate alerts and the composed digest both go
 // through Notify (beacon v0.1.0 has no digest-shaped report method, so the
 // digest is a hand-composed Notification, the same path the sibling tools use).
-// It is satisfied by *beacon.Beacon and is nil-tolerant at the call site.
+// It is satisfied by *courier.Beacon and is nil-tolerant at the call site.
 type Notifier interface {
-	Notify(ctx context.Context, n beacon.Notification) error
+	Notify(ctx context.Context, n courier.Notification) error
 }
 
 // Compile-time proof the concrete types satisfy the seams, so the interfaces can
 // never drift from what they abstract.
 var (
 	_ Reconciler = (*reconcile.Reconciler)(nil)
-	_ Notifier   = (*beacon.Beacon)(nil)
+	_ Notifier   = (*courier.Beacon)(nil)
 )
 
 // Config constructs a Daemon. The three seams (Runtime, Reconciler, Notifier)
@@ -118,7 +118,7 @@ type Config struct {
 	Reconciler Reconciler
 
 	// Notifier is the beacon alert path. Nil is tolerated (alerts are dropped),
-	// but the CLI always supplies BuildNotifier's log-floored beacon.
+	// but the CLI always supplies BuildNotifier's log-floored courier.
 	Notifier Notifier
 
 	// Config is the loaded aboard.yml plus globals: the proxy switch and Traefik

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tagwright/beacon"
-	"github.com/tagwright/beacon/beacontest"
+	"github.com/tagwright/courier"
+	"github.com/tagwright/courier/beacontest"
 
 	"github.com/tagwright/core/runtime/runtimetest"
 )
@@ -37,7 +37,7 @@ func TestRun_ListFailureAlertsOperator(t *testing.T) {
 	injected := errors.New("injected list failure")
 	rt.Faults.List = injected
 
-	notifier, capture := beacontest.New(beacon.LevelInfo)
+	notifier, capture := beacontest.New(courier.LevelInfo)
 
 	deps := Deps{
 		Runtime:    rt,
@@ -57,7 +57,7 @@ func TestRun_ListFailureAlertsOperator(t *testing.T) {
 	fired := false
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if capture.Contains(beacon.LevelError, "list containers failed") {
+		if capture.Contains(courier.LevelError, "list containers failed") {
 			fired = true
 			break
 		}
@@ -74,7 +74,7 @@ func TestRun_ListFailureAlertsOperator(t *testing.T) {
 	if !fired {
 		t.Fatalf("aboard's List-failure alert did not fire: no Error-level notification about the failed listing was captured (a silent swallow of the notifier-only surface). captured: %+v", capture.Notifications())
 	}
-	if !capture.Contains(beacon.LevelError, injected.Error()) {
+	if !capture.Contains(courier.LevelError, injected.Error()) {
 		t.Fatalf("the List-failure alert did not carry the underlying error %q; captured: %+v", injected, capture.Notifications())
 	}
 }

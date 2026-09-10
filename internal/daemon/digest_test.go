@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tagwright/beacon"
+	"github.com/tagwright/courier"
 
 	"github.com/tagwright/aboard/internal/reconcile"
 	"github.com/tagwright/aboard/internal/spec"
@@ -30,7 +30,7 @@ func TestComposeDigestOrdersAndCounts(t *testing.T) {
 
 	n := composeDigest(sticky, orphans, now)
 
-	if n.Level != beacon.LevelError {
+	if n.Level != courier.LevelError {
 		t.Fatalf("level = %v, want error (a sticky error and a live-credential orphan present)", n.Level)
 	}
 	if n.Fields["sticky"] != "1" || n.Fields["orphans_oidc"] != "1" || n.Fields["orphans_proxy"] != "1" {
@@ -59,7 +59,7 @@ func TestComposeDigestOrdersAndCounts(t *testing.T) {
 // TestComposeDigestClean proves a clean fleet is an info heartbeat, not an alarm.
 func TestComposeDigestClean(t *testing.T) {
 	n := composeDigest(nil, nil, time.Unix(0, 0).UTC())
-	if n.Level != beacon.LevelInfo {
+	if n.Level != courier.LevelInfo {
 		t.Fatalf("level = %v, want info for a clean fleet", n.Level)
 	}
 	if !strings.Contains(n.Body, "Nothing to report") {
@@ -72,7 +72,7 @@ func TestComposeDigestClean(t *testing.T) {
 func TestComposeDigestProxyOnlyIsWarning(t *testing.T) {
 	orphans := []reconcile.Orphan{{Slug: "whoami", Kind: spec.ProviderForwardAuth}}
 	n := composeDigest(nil, orphans, time.Unix(0, 0).UTC())
-	if n.Level != beacon.LevelWarning {
+	if n.Level != courier.LevelWarning {
 		t.Fatalf("level = %v, want warning for proxy-only orphans", n.Level)
 	}
 }

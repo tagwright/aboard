@@ -38,7 +38,7 @@ const MinOIDCSecretLength = 32
 // which every named-secret reference in aboard.yml or a label gets its value:
 // names live in config and labels, values live in files.
 //
-// The signature matches beacon.SecretResolver and ballast's, so the same
+// The signature matches courier.SecretResolver and ballast's, so the same
 // Resolver can be handed to any suite module that consumes secrets by name.
 type Resolver func(name string) (string, error)
 

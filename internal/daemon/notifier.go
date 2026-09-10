@@ -4,7 +4,7 @@
 package daemon
 
 import (
-	"github.com/tagwright/beacon"
+	"github.com/tagwright/courier"
 
 	"github.com/tagwright/aboard/internal/config"
 	"github.com/tagwright/aboard/internal/secret"
@@ -19,15 +19,15 @@ import (
 // aboard.yml carries no notification-channel block in v1 (unlike ballast's
 // cfg.Notifications), so the beacon config here is exactly the log floor: a
 // "log" channel at info level, beacon's built-in always-on backend. When
-// aboard.yml grows a channels block, map each entry onto beacon.ChannelConfig
+// aboard.yml grows a channels block, map each entry onto courier.ChannelConfig
 // here the way ballast does (parse the level, carry the settings), and keep the
 // len==0 fallback to the log floor. The secret resolver is handed to beacon so a
 // future channel that names a secret (a webhook token) resolves it by NAME the
 // same inward-only way the rest of aboard does.
-func BuildNotifier(cfg *config.Config, resolve secret.Resolver) (*beacon.Beacon, error) {
-	channels := []beacon.ChannelConfig{
-		{Type: "log", MinLevel: beacon.LevelInfo},
+func BuildNotifier(cfg *config.Config, resolve secret.Resolver) (*courier.Beacon, error) {
+	channels := []courier.ChannelConfig{
+		{Type: "log", MinLevel: courier.LevelInfo},
 	}
-	beaconCfg := beacon.Config{Channels: channels}
-	return beacon.New(beaconCfg, beacon.SecretResolver(resolve))
+	beaconCfg := courier.Config{Channels: channels}
+	return courier.New(beaconCfg, courier.SecretResolver(resolve))
 }

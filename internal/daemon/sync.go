@@ -6,7 +6,7 @@ package daemon
 import (
 	"context"
 
-	"github.com/tagwright/beacon"
+	"github.com/tagwright/courier"
 	"github.com/tagwright/core/runtime"
 
 	"github.com/tagwright/aboard/internal/config"
@@ -24,7 +24,7 @@ import (
 func (d *Daemon) fullPass(ctx context.Context) {
 	containers, err := d.rt.List(ctx)
 	if err != nil {
-		d.notify(ctx, beacon.LevelError, "aboard: list containers failed", err.Error())
+		d.notify(ctx, courier.LevelError, "aboard: list containers failed", err.Error())
 		return
 	}
 
@@ -146,7 +146,7 @@ func (d *Daemon) processContainer(ctx context.Context, c runtime.Container) (str
 func (d *Daemon) refreshFromList(ctx context.Context) {
 	containers, err := d.rt.List(ctx)
 	if err != nil {
-		d.notify(ctx, beacon.LevelError, "aboard: list containers failed", err.Error())
+		d.notify(ctx, courier.LevelError, "aboard: list containers failed", err.Error())
 		return
 	}
 	d.setFleetCallback(detectFleetCallback(containers))
@@ -176,7 +176,7 @@ func (d *Daemon) refreshOrphans(ctx context.Context, enabledSlugs []string) {
 
 	orphans, err := d.reconciler.Orphans(ctx, enabledSlugs)
 	if err != nil {
-		d.notify(ctx, beacon.LevelError, "aboard: orphan scan failed", err.Error())
+		d.notify(ctx, courier.LevelError, "aboard: orphan scan failed", err.Error())
 		return
 	}
 	d.setOrphans(orphans)
@@ -186,7 +186,7 @@ func (d *Daemon) refreshOrphans(ctx context.Context, enabledSlugs []string) {
 // so a freshly-broken gate is not left to wait for the daily digest.
 func (d *Daemon) notifySticky(ctx context.Context, added []stickyEntry) {
 	for _, e := range added {
-		d.notify(ctx, beacon.LevelError, "aboard: "+e.Code, e.Service+": "+e.Message)
+		d.notify(ctx, courier.LevelError, "aboard: "+e.Code, e.Service+": "+e.Message)
 	}
 }
 
@@ -203,14 +203,14 @@ func (d *Daemon) notifyTransient(ctx context.Context, service string, issues []d
 }
 
 // levelForSeverity maps a discovery severity to a beacon level.
-func levelForSeverity(s discovery.Severity) beacon.Level {
+func levelForSeverity(s discovery.Severity) courier.Level {
 	switch s {
 	case discovery.SeverityError:
-		return beacon.LevelError
+		return courier.LevelError
 	case discovery.SeverityWarning:
-		return beacon.LevelWarning
+		return courier.LevelWarning
 	default:
-		return beacon.LevelInfo
+		return courier.LevelInfo
 	}
 }
 
@@ -218,11 +218,11 @@ func levelForSeverity(s discovery.Severity) beacon.Level {
 // (the sibling tools' nil-tolerant helper). No secret value ever reaches here:
 // every title and body is built from codes, names, and messages that the lower
 // packages guarantee are secret-free.
-func (d *Daemon) notify(ctx context.Context, level beacon.Level, title, body string) {
+func (d *Daemon) notify(ctx context.Context, level courier.Level, title, body string) {
 	if d.notifier == nil {
 		return
 	}
-	_ = d.notifier.Notify(ctx, beacon.Notification{
+	_ = d.notifier.Notify(ctx, courier.Notification{
 		Title: title,
 		Body:  body,
 		Level: level,

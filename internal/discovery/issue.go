@@ -10,7 +10,7 @@ import "fmt"
 //
 //   - SeverityError is skip-and-alert. A container with any error is not
 //     reconciled: its Spec is incomplete or unsafe to act on, and the error is
-//     surfaced through beacon. Because a skipped container may be an app that is
+//     surfaced through courier. Because a skipped container may be an app that is
 //     now open, or one whose access rule never landed, an error is sticky in the
 //     digest until fixed.
 //   - SeverityWarning does not skip. Today the only warning is declared-but-
