@@ -183,6 +183,13 @@ behavior. They are env, not `aboard.yml` fields:
   `/run/podman/podman.sock` for podman. Set this to point a rootless podman
   deploy at `$XDG_RUNTIME_DIR/podman/podman.sock`.
 - `ABOARD_DIGEST_SCHEDULE`: the daily beacon digest cadence. Default `daily`.
+- `ABOARD_GOLIVE_TIMEOUT`: how long a forward-auth reconcile polls the live
+  embedded outpost for the host to start serving after the attach before it
+  reports the go-live stale. A Go duration (e.g. `3m`, `90s`). Default `3m`. The
+  embedded outpost reloads its config asynchronously and slowly (~80s measured
+  live, no server restart), so the default is generous; a not-yet-serving app
+  polls, an already-served one probes once and returns fast. An unset or
+  unparseable value falls back to the default, never a zero window.
 
 Only the literal string `true` opts a boolean global in. Anything else,
 including a typo, is `false`, because a security tool must not widen its write

@@ -266,14 +266,25 @@ harness:
    the detach-and-delete. The daemon deliberately does not auto-detach (see the
    design note below).
 
-3. **Go-live verification.** After the outpost attach, aboard probes the LIVE
-   embedded outpost to confirm it actually serves the host, rather than trusting the
-   DB providers list. A probe error surfaces `go-live-unverified`
-   (`TestReconcile_GoLiveProbeErrorSurfaces`); a provider that is in the DB list but
-   whose host the live outpost does not serve forces a config-reload PATCH and, still
-   unserved, surfaces `go-live-stale` with `Attached=false`
-   (`TestReconcile_GoLiveStaleAttachedButNotServedSurfaces`, which seeds the provider
-   already-in-list to reproduce the exact #605 skip-the-PATCH gap).
+3. **Go-live verification, with a poll (b3).** After the outpost attach, aboard
+   probes the LIVE embedded outpost to confirm it actually serves the host, rather
+   than trusting the DB providers list. It probes ONCE first, so an already-served
+   host returns immediately and a healthy reconcile never waits. Only a not-yet-
+   served host forces a config-reload PATCH and then POLLS with exponential backoff
+   (`goLivePollInitial` to `goLivePollMax`, bounded by `ABOARD_GOLIVE_TIMEOUT`,
+   default `DefaultGoLiveTimeout` = 3m), because the embedded outpost reloads
+   asynchronously and SLOWLY (~80s measured live, no server restart). It reports
+   live the moment the host serves, and `go-live-stale` only after the whole window
+   elapses unserved. A probe error surfaces `go-live-unverified`
+   (`TestReconcile_GoLiveProbeErrorSurfaces`).
+   `TestReconcile_GoLivePollsUntilServedThenLive` proves the poll waits through the
+   slow reload and reports LIVE (a fake serves only from the 4th probe);
+   `TestReconcile_GoLivePollHonorsTimeout` proves a never-serving host reports stale
+   after the configured window, not a hang; and
+   `TestReconcile_GoLiveStaleAttachedButNotServedSurfaces` proves the stale path
+   still polls (not one re-probe) and forces the reload even when the provider is
+   already in the DB list (the exact #605 skip-the-PATCH gap). All three drive the
+   backoff deterministically through an injected clock, so they finish instantly.
 
 4. **Ground-truth status.** `status` labels the enabled list as DISCOVERED (from
    labels) and prints a CONFIRMED section from actual Authentik state: a provider
@@ -290,6 +301,22 @@ callback (a 404 means the host is not served). The reconciler's USE of it (attac
 then verify, force a reload when stale, surface a loud finding when unconfirmed) is
 fully fake-proven; the probe's own correctness against a real running outpost is a
 RESIDUAL below.
+
+## The go-live poll empirical result (b3)
+
+The b2 go-live verification forced the outpost reload and re-probed ONCE,
+immediately. A live e2e (v00.01.00b2, no litter, cleaned up) caught the flaw: the
+immediate re-probe saw the embedded outpost still not serving the host and returned
+`go-live-stale`, but ~80s later the host WAS serving (a 302), with NO
+authentik-server restart. So the embedded outpost genuinely reloads after the
+attach, it is just SLOW, far longer than one re-probe. The b2 verification gave up
+too early and false-reported stale on a reconcile that would have gone live.
+
+Fixed by polling with backoff up to a configurable window (default 3m) instead of a
+single re-probe (see the hardening item 3 above). Open question, tracked in
+RESIDUALS: whether the forced PATCH speeds the reload up or the outpost's own
+periodic refresh would have served on the same timeline. aboard keeps the forced
+PATCH and polls, which is correct regardless.
 
 ## What is PARTIAL
 
@@ -310,13 +337,34 @@ RESIDUAL below.
   belongs to a real deployment; the Traefik verifier's correctness against a
   live fleet is the remaining unproven link.
 
-- **The live outpost serve probe (`OutpostServesHost`).** The go-live
-  verification and the status confirmed-section depend on the embedded outpost
-  returning a non-404 for a served host and a 404 for an unserved one (step 9
-  confirmed exactly this shape end to end). The probe's REST-level behavior against
-  the real 2025.6.4 outpost, and specifically that a forced reload PATCH clears a
-  genuinely stale outpost, still needs an integration-harness leg. The reconciler's
-  reaction to every probe outcome is fake-proven; the probe itself is live-only.
+- **The live outpost serve probe and go-live poll** are now covered by an
+  OPERATOR-RUN harness leg, `test/integration/golive.sh` (not CI-automated here, see
+  below). It creates a real labeled forward-auth container, runs one real aboard
+  boot pass (which provisions, attaches, forces the reload, and polls), asserts
+  aboard does NOT report `go-live-stale` and that the live embedded outpost actually
+  serves the host (a 302, not a 404) WITHOUT any authentik-server restart, then
+  removes the container and prunes the orphan. This is the honest resolution of the
+  b2 "OutpostServesHost is live-only" residual: the reconciler's reaction to every
+  probe outcome is fake-proven in unit tests, and the probe's real REST behavior
+  plus the slow-reload timing are proven by this operator-run leg. It is
+  operator-run because it needs the disposable Authentik stack up (2-4 min boot),
+  which this host's CI cannot yet stand up; the self-hosted privileged runner
+  (Standard task #548) is the intended home, and until it lands this leg carries a
+  `LAST-RUN`-style stamp when run, per the Standard.
+
+- **Forced-reload PATCH vs the outpost's own periodic refresh (open question,
+  honestly).** The b2 e2e observed the host serving ~80s after the attach with no
+  server restart, but did NOT isolate whether the forced providers-list PATCH
+  triggered that reload or the embedded outpost's own periodic refresh would have
+  landed on the same timeline anyway. Settling it needs a controlled A/B on the live
+  disposable Authentik: time serve-onset WITH the forced PATCH against serve-onset
+  with poll-only (no PATCH). That experiment is not run here. aboard KEEPS the forced
+  PATCH and polls, because the PATCH is one cheap idempotent call that can only help
+  or be a no-op (it re-sends the outpost config on model save), and the poll makes
+  correctness independent of which mechanism dominates: if the PATCH does nothing,
+  the poll still catches the natural refresh; if it speeds things up, better. So the
+  fix is robust either way; the A/B only decides whether the PATCH is load-bearing or
+  merely belt-and-suspenders, and it is tracked as a harness follow-up.
 
 - **Named (non-embedded) outpost go-live** is NOT verified: aboard cannot route to
   a separate outpost's address, so `OutpostServesHost` targets the embedded outpost
@@ -339,7 +387,13 @@ docker compose -p aboard-itest up -d          # bring up the disposable Authenti
 CGO_ENABLED=0 go build -o aboard-bin ../../cmd/aboard   # build the binary (in a golang:1.25 container)
 ./pass.sh                                     # one real boot reconcile pass
 ./api.sh GET /api/v3/core/applications/?superuser_full_list=true   # assert against the API
+./golive.sh                                   # the go-live poll leg: provision, poll, assert 302, prune
 docker compose -p aboard-itest down -v        # tear down everything
 ```
+
+`golive.sh` is the go-live poll e2e leg (b3): it asserts a newly-provisioned app
+goes live within the poll window WITHOUT a server restart, then prunes. It is
+operator-run for now (it needs the disposable Authentik up), and it is the honest
+resolution of the b2 "OutpostServesHost is live-only" residual.
 
 The unit suite is the fast gate; the integration harness is the honest one.
