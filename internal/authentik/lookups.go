@@ -5,6 +5,8 @@ package authentik
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -229,6 +231,55 @@ func (c *Client) PatchOutpostProviders(ctx context.Context, pk string, providers
 		return nil, err
 	}
 	return &out, nil
+}
+
+// outpostForwardAuthPath is the embedded outpost's forward-auth callback the
+// Traefik middleware calls. The outpost routes it to a provider by the forwarded
+// host: a host it serves returns a 302-to-login (or another non-404), a host it
+// does not serve returns 404. This is the ground truth aboard probes to confirm a
+// go-live actually took effect, rather than trusting the DB providers list, which
+// can be correct while the LIVE outpost serves a stale set (the #605 class).
+const outpostForwardAuthPath = "/outpost.goauthentik.io/auth/traefik"
+
+// OutpostServesHost reports whether the embedded outpost actually serves the
+// forward-auth host right now, by calling its callback with the host forwarded
+// and reading the status: a 404 means the host is NOT in the live outpost's
+// served set, anything else means it is. This is a LIVE probe of the running
+// outpost, not a read of the providers list, so it catches an attached-but-stale
+// outpost that the DB list alone reports as fine.
+//
+// It sends no Bearer token (the outpost callback is not the API) and does not
+// follow the 302-to-login, because the redirect itself is proof the host is
+// served. It is empirically meaningful only against a live Authentik outpost;
+// unit tests drive the reconciler's use of it through an injected fake.
+func (c *Client) OutpostServesHost(ctx context.Context, host string) (bool, error) {
+	if host == "" {
+		return false, fmt.Errorf("authentik: outpost serve probe: empty host")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+outpostForwardAuthPath, nil)
+	if err != nil {
+		return false, fmt.Errorf("authentik: outpost serve probe %s: build request: %w", host, err)
+	}
+	// The outpost keys forward-auth on the forwarded host. Set both the request
+	// Host and X-Forwarded-Host so the probe matches how Traefik forwards it.
+	req.Host = host
+	req.Header.Set("X-Forwarded-Host", host)
+	req.Header.Set("X-Forwarded-Proto", "https")
+
+	// A one-off client over the shared transport that does NOT follow redirects: a
+	// 302-to-login is a served host, and following it would chase the login flow.
+	probe := &http.Client{
+		Timeout:       requestTimeout,
+		Transport:     c.http.Transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	resp, err := probe.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("authentik: outpost serve probe %s: %w", host, err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBody))
+	return resp.StatusCode != http.StatusNotFound, nil
 }
 
 // pageSizeQuery builds the page/page_size query for a paginated walk.

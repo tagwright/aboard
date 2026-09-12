@@ -118,6 +118,39 @@ func (c *Client) GetProviderByPK(ctx context.Context, pk int) (*ProviderRef, err
 	return &out, nil
 }
 
+// ListProxyProviders returns every proxy provider from the /providers/proxy/
+// list, following pagination with an explicit page_size. Each entry carries its
+// external_host, which the polymorphic /providers/all/ list does not, so this is
+// the fleet-wide input for the external-host collision check: two aboard-owned
+// proxy providers must never claim the same external_host, which collides in the
+// embedded outpost's host-to-provider map and 302-loops forever.
+//
+// The proxy endpoint returns ONLY genuine proxy providers (unlike the oauth2 list,
+// which returns the proxy subclass too), so no double-counting to defend against.
+func (c *Client) ListProxyProviders(ctx context.Context, pageSize int) ([]ProxyProvider, error) {
+	if pageSize <= 0 {
+		pageSize = 100
+	}
+	var all []ProxyProvider
+	page := 1
+	for {
+		q := pageSizeQuery(page, pageSize)
+		resp, err := listPage[ProxyProvider](ctx, c, proxyProvidersPath, q)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, resp.Results...)
+		// The same last-page pagination rule as ListAllProviders: on 2025.6.4 next
+		// is a page NUMBER that is 0 (not null) on the last page, so stop unless it
+		// names a page strictly beyond the current one.
+		if resp.Pagination.Next == nil || *resp.Pagination.Next <= page {
+			break
+		}
+		page = *resp.Pagination.Next
+	}
+	return all, nil
+}
+
 // GetProxyProviderByName finds a proxy provider by exact name. The list endpoint
 // filters by search (fuzzy), so the exact name is confirmed client-side, matching
 // the production script's jq exact-equality filter. Not found returns ErrNotFound.
