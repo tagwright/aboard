@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/tagwright/aboard/internal/authentik"
 	"github.com/tagwright/aboard/internal/config"
@@ -156,12 +157,47 @@ type Reconciler struct {
 	api     API
 	cfg     *config.Config
 	resolve secret.Resolver
+
+	// now and sleep are the go-live poll's clock seam. Production uses the wall
+	// clock and a context-aware sleep; a test substitutes both to drive the
+	// backoff deterministically without real waiting. They are never nil after New.
+	now   func() time.Time
+	sleep func(context.Context, time.Duration) error
 }
 
 // New builds a Reconciler over api, cfg, and resolve.
 func New(api API, cfg *config.Config, resolve secret.Resolver) *Reconciler {
-	return &Reconciler{api: api, cfg: cfg, resolve: resolve}
+	return &Reconciler{
+		api:     api,
+		cfg:     cfg,
+		resolve: resolve,
+		now:     time.Now,
+		sleep:   sleepCtx,
+	}
 }
+
+// sleepCtx waits d, or returns early with ctx.Err() if the context is cancelled
+// first, so a shutdown never leaves a reconcile blocked in the go-live poll.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// Go-live poll cadence. After the forced reload the embedded outpost serves the
+// host only after an asynchronous reload (~80s measured live), so the reconcile
+// polls with exponential backoff from goLivePollInitial up to goLivePollMax,
+// bounded by the configured timeout. The interval caps so a long window does not
+// stretch to sparse probes late in the wait.
+const (
+	goLivePollInitial = 3 * time.Second
+	goLivePollMax     = 15 * time.Second
+)
 
 // desiredBinding is one resolved access binding aboard means the Application to
 // carry: a group or an existing policy, addressed by its resolved Authentik pk.
@@ -935,10 +971,14 @@ func (r *Reconciler) attachOutpost(ctx context.Context, res *Result, outpostName
 }
 
 // verifyGoLive confirms the live embedded outpost actually serves host, not merely
-// that the provider is in the DB list. If the probe says the host is unserved (an
-// attached-but-stale outpost), it forces a config reload by re-PATCHing the
-// providers list and probes once more. A probe error is CodeGoLiveUnverified and a
-// still-unserved host after the reload is CodeGoLiveStale; both leave Attached
+// that the provider is in the DB list. It probes ONCE first: an already-served
+// host returns immediately, so a healthy reconcile never waits. Only when the host
+// is not yet served does it force a reload and POLL: the embedded outpost reloads
+// its config asynchronously and slowly (~80s measured live, no server restart), so
+// a single immediate re-probe false-reports stale, the exact bug the b2 e2e test
+// caught. It polls with backoff up to the configured window, reporting live the
+// moment the host serves and CodeGoLiveStale only after the whole window elapses
+// unserved. A probe error is CodeGoLiveUnverified. All failures leave Attached
 // false, because aboard must never report a go-live it could not confirm.
 func (r *Reconciler) verifyGoLive(ctx context.Context, res *Result, outpost *authentik.Outpost, providerPK int, host string) error {
 	serves, err := r.api.OutpostServesHost(ctx, host)
@@ -951,7 +991,7 @@ func (r *Reconciler) verifyGoLive(ctx context.Context, res *Result, outpost *aut
 
 	// Attached in the DB but not served live: force a reload by re-PATCHing the
 	// providers list (with the provider present), which re-triggers the outpost's
-	// config push, then re-probe once.
+	// config push, then poll for the asynchronous reload to take effect.
 	merged := append([]int{}, outpost.Providers...)
 	if !containsInt(merged, providerPK) {
 		merged = append(merged, providerPK)
@@ -961,16 +1001,55 @@ func (r *Reconciler) verifyGoLive(ctx context.Context, res *Result, outpost *aut
 	}
 	res.Actions = append(res.Actions, "forced outpost config reload for host "+host)
 
-	serves, err = r.api.OutpostServesHost(ctx, host)
-	if err != nil {
-		return r.fail(res, CodeGoLiveUnverified, "could not verify the outpost serves host "+host+" after a forced reload: "+err.Error())
+	return r.pollGoLive(ctx, res, host)
+}
+
+// pollGoLive waits for the embedded outpost to start serving host, polling with
+// exponential backoff until it does (live) or the configured timeout elapses
+// (CodeGoLiveStale). A probe error along the way is CodeGoLiveUnverified, and a
+// cancelled context (a daemon shutdown) surfaces as unverified rather than a
+// spurious stale. It is only reached for a not-yet-serving host, so a healthy
+// reconcile never enters it.
+func (r *Reconciler) pollGoLive(ctx context.Context, res *Result, host string) error {
+	timeout := r.goLiveTimeout()
+	deadline := r.now().Add(timeout)
+	interval := goLivePollInitial
+	for {
+		if err := r.sleep(ctx, interval); err != nil {
+			return r.fail(res, CodeGoLiveUnverified,
+				"go-live poll for host "+host+" interrupted before the outpost served it: "+err.Error())
+		}
+		serves, err := r.api.OutpostServesHost(ctx, host)
+		if err != nil {
+			return r.fail(res, CodeGoLiveUnverified,
+				"could not verify the outpost serves host "+host+" while polling after the reload: "+err.Error())
+		}
+		if serves {
+			res.Actions = append(res.Actions, "outpost began serving host "+host+" after the reload")
+			return nil
+		}
+		if !r.now().Before(deadline) {
+			return r.fail(res, CodeGoLiveStale,
+				"provider is in the outpost's providers list but the live outpost did not serve host "+host+
+					" within "+timeout.String()+" of the forced reload: the outpost is attached but stale, the app is not live")
+		}
+		if interval < goLivePollMax {
+			interval *= 2
+			if interval > goLivePollMax {
+				interval = goLivePollMax
+			}
+		}
 	}
-	if !serves {
-		return r.fail(res, CodeGoLiveStale,
-			"provider is in the outpost's providers list but the live outpost does not serve host "+host+
-				" even after a forced reload: the outpost is attached but stale, the app is not live")
+}
+
+// goLiveTimeout is the configured go-live poll window, falling back to the default
+// when the config was built without Load's defaulting (a test config), so the poll
+// never runs with a zero window.
+func (r *Reconciler) goLiveTimeout() time.Duration {
+	if r.cfg != nil && r.cfg.Globals.GoLiveTimeout > 0 {
+		return r.cfg.Globals.GoLiveTimeout
 	}
-	return nil
+	return config.DefaultGoLiveTimeout
 }
 
 // boolPtr returns a pointer to b, for the binding request's pointer bools where

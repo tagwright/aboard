@@ -37,9 +37,16 @@ type fakeAPI struct {
 	// (with external_host) the collision check scans. serves controls the live
 	// outpost serve probe per host, and servesDefault is the answer for a host with
 	// no explicit entry (default true, a live outpost that serves everything).
-	proxyList     []authentik.ProxyProvider
-	serves        map[string]bool
-	servesDefault bool
+	//
+	// servesAfter models the slow asynchronous reload: servesAfter[host]=N returns
+	// NOT served for the first N probes of host and served from probe N+1, which is
+	// how the go-live poll's backoff is proven to wait rather than give up early.
+	// serveProbeCount tracks per-host probe calls for it.
+	proxyList       []authentik.ProxyProvider
+	serves          map[string]bool
+	servesDefault   bool
+	servesAfter     map[string]int
+	serveProbeCount map[string]int
 
 	calls []string
 	errOn map[string]error
@@ -88,9 +95,11 @@ func newFake() *fakeAPI {
 		patchedOAuth:   map[int]authentik.OAuth2ProviderRequest{},
 		patchedSAML:    map[int]authentik.SAMLProviderRequest{},
 		patchedApps:    map[string]authentik.ApplicationRequest{},
-		iconSet:        map[string]string{},
-		serves:         map[string]bool{},
-		servesDefault:  true,
+		iconSet:         map[string]string{},
+		serves:          map[string]bool{},
+		servesDefault:   true,
+		servesAfter:     map[string]int{},
+		serveProbeCount: map[string]int{},
 	}
 }
 
@@ -170,6 +179,10 @@ func (f *fakeAPI) ListProxyProviders(_ context.Context, _ int) ([]authentik.Prox
 func (f *fakeAPI) OutpostServesHost(_ context.Context, host string) (bool, error) {
 	if err := f.rec("OutpostServesHost"); err != nil {
 		return false, err
+	}
+	if n, ok := f.servesAfter[host]; ok {
+		f.serveProbeCount[host]++
+		return f.serveProbeCount[host] > n, nil
 	}
 	if v, ok := f.serves[host]; ok {
 		return v, nil

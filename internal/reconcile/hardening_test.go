@@ -6,11 +6,25 @@ package reconcile
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/tagwright/aboard/internal/authentik"
 	"github.com/tagwright/aboard/internal/discovery"
 	"github.com/tagwright/aboard/internal/spec"
 )
+
+// withFastClock installs a deterministic clock on r so the go-live poll runs with
+// no real waiting: sleep advances a virtual clock by the requested duration and
+// returns at once, and now reads that clock. This proves the backoff logic (does
+// it poll, does it honor the timeout) without a multi-minute test.
+func withFastClock(r *Reconciler) {
+	clock := time.Unix(0, 0)
+	r.now = func() time.Time { return clock }
+	r.sleep = func(_ context.Context, d time.Duration) error {
+		clock = clock.Add(d)
+		return nil
+	}
+}
 
 // These lock in the four hardening fault paths from the two production incidents.
 // Each proves the failure SURFACES (a sticky error, nothing goes live), never a
@@ -96,10 +110,12 @@ func TestReconcile_GoLiveStaleAttachedButNotServedSurfaces(t *testing.T) {
 	// contain pk 1, so the attach step finds it present and would skip the PATCH.
 	f := newFake().withFlows().withEmbedded(1)
 	f.groups["g-admins"] = &authentik.Group{PK: "grp-admins", Name: "g-admins"}
-	// The live outpost does not serve the host: attached-but-stale.
+	// The live outpost NEVER serves the host: attached-but-stale for good.
 	f.serves["whoami.example.com"] = false
 
 	r := New(f, testConfig(), fixedResolver("unused"))
+	withFastClock(r) // poll deterministically, no real multi-minute wait
+
 	res, err := r.Reconcile(context.Background(), baseForwardSpec())
 
 	if errCode(err) != CodeGoLiveStale {
@@ -112,6 +128,66 @@ func TestReconcile_GoLiveStaleAttachedButNotServedSurfaces(t *testing.T) {
 	// in the DB list (the exact gap #605 hit: no PATCH, no reload).
 	if !f.called("PatchOutpostProviders") {
 		t.Error("a stale outpost must trigger a forced reload PATCH, even when the provider is already in the DB list")
+	}
+	// It must have POLLED, not given up on one re-probe: the initial probe plus
+	// several poll probes means many OutpostServesHost calls, not two.
+	probes := 0
+	for _, c := range f.calls {
+		if c == "OutpostServesHost" {
+			probes++
+		}
+	}
+	if probes < 3 {
+		t.Errorf("stale path must POLL the outpost, got only %d serve probes (b2 gave up after one re-probe)", probes)
+	}
+}
+
+// Fix (b3): the embedded outpost reloads SLOWLY (~80s live). verifyGoLive must
+// POLL after the forced reload and report LIVE once the host starts serving,
+// rather than false-reporting stale on an immediate re-probe. The fake serves not
+// for the first few probes, then serves, exactly like the slow reload.
+func TestReconcile_GoLivePollsUntilServedThenLive(t *testing.T) {
+	f := newFake().withFlows().withEmbedded(1)
+	f.groups["g-admins"] = &authentik.Group{PK: "grp-admins", Name: "g-admins"}
+	// Not served for the first 3 probes (the initial probe + 2 poll probes), then
+	// served: the async reload lands mid-poll.
+	f.servesAfter["whoami.example.com"] = 3
+
+	r := New(f, testConfig(), fixedResolver("unused"))
+	withFastClock(r)
+
+	res, err := r.Reconcile(context.Background(), baseForwardSpec())
+	if err != nil {
+		t.Fatalf("go-live must be reported LIVE once the outpost serves after the reload, got err=%v", err)
+	}
+	if !res.Attached {
+		t.Error("Attached must be true once the outpost serves the host within the poll window")
+	}
+}
+
+// The poll must honor the configured timeout: a shorter ABOARD_GOLIVE_TIMEOUT
+// gives up sooner. A host that only starts serving after the window would elapse
+// still reports stale, proving the timeout bounds the wait rather than polling
+// forever.
+func TestReconcile_GoLivePollHonorsTimeout(t *testing.T) {
+	f := newFake().withFlows().withEmbedded(1)
+	f.groups["g-admins"] = &authentik.Group{PK: "grp-admins", Name: "g-admins"}
+	f.serves["whoami.example.com"] = false // never serves
+
+	cfg := testConfig()
+	cfg.Globals.GoLiveTimeout = 10 * time.Second // tight window
+
+	r := New(f, cfg, fixedResolver("unused"))
+	// A clock that advances by the real requested interval, so the 10s window is
+	// reached after a bounded number of backoff steps.
+	withFastClock(r)
+
+	res, err := r.Reconcile(context.Background(), baseForwardSpec())
+	if errCode(err) != CodeGoLiveStale {
+		t.Fatalf("a never-serving host must report %s after the timeout, got err=%v", CodeGoLiveStale, err)
+	}
+	if res.Attached {
+		t.Error("Attached must be false when the poll window elapses unserved")
 	}
 }
 

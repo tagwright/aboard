@@ -18,6 +18,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -87,6 +88,17 @@ const DefaultSecretsDir = "/run/aboard/secrets"
 // DefaultDigestSchedule is the ABOARD_DIGEST_SCHEDULE fallback for the daily
 // beacon digest cadence.
 const DefaultDigestSchedule = "daily"
+
+// DefaultGoLiveTimeout is the ABOARD_GOLIVE_TIMEOUT fallback: how long a
+// forward-auth reconcile polls the live embedded outpost for the host to start
+// serving after the attach, before it gives up and reports the go-live stale. The
+// embedded outpost reloads its config asynchronously and SLOWLY: a live e2e test
+// measured ~80s from the attach to the host serving, with no server restart. So
+// the default is generous (3 minutes) to cover that lag with margin, since a
+// false "stale" on a reconcile that would have gone live is worse than waiting.
+// Only a not-yet-serving provider polls; an already-served one probes once and
+// returns fast, so a healthy reconcile never waits.
+const DefaultGoLiveTimeout = 3 * time.Minute
 
 // Authentik is the IdP endpoint block. The url is the INTERNAL endpoint aboard
 // calls, because the public URL is Cloudflare-blocked for programmatic access.
@@ -164,6 +176,13 @@ type Globals struct {
 	// Socket is ABOARD_SOCKET: mirrors aboard.yml socket:. When set it overlays
 	// the yaml value (see Load). Empty means "not set in the environment".
 	Socket string
+
+	// GoLiveTimeout is ABOARD_GOLIVE_TIMEOUT: how long a forward-auth reconcile
+	// polls the live outpost for the host to start serving after the attach before
+	// reporting the go-live stale. Parsed as a Go duration. Default
+	// DefaultGoLiveTimeout (the embedded outpost's reload is asynchronous and slow,
+	// ~80s measured live).
+	GoLiveTimeout time.Duration
 }
 
 // Config is a parsed aboard.yml plus the loaded ABOARD_* globals.
@@ -335,6 +354,15 @@ func loadGlobals() Globals {
 	}
 	if v := os.Getenv("ABOARD_DIGEST_SCHEDULE"); v != "" {
 		g.DigestSchedule = v
+	}
+	// ABOARD_GOLIVE_TIMEOUT is a Go duration; an unset or unparseable value falls
+	// back to the default rather than a zero window, so a typo can never disable
+	// the go-live poll and turn every slow-but-fine reload into a false stale.
+	g.GoLiveTimeout = DefaultGoLiveTimeout
+	if v := os.Getenv("ABOARD_GOLIVE_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			g.GoLiveTimeout = d
+		}
 	}
 	return g
 }
