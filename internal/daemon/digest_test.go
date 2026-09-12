@@ -28,7 +28,7 @@ func TestComposeDigestOrdersAndCounts(t *testing.T) {
 		{Slug: "whoami", Kind: spec.ProviderForwardAuth},
 	}
 
-	n := composeDigest(sticky, orphans, now)
+	n := composeDigest(sticky, orphans, nil, now)
 
 	if n.Level != courier.LevelError {
 		t.Fatalf("level = %v, want error (a sticky error and a live-credential orphan present)", n.Level)
@@ -58,7 +58,7 @@ func TestComposeDigestOrdersAndCounts(t *testing.T) {
 
 // TestComposeDigestClean proves a clean fleet is an info heartbeat, not an alarm.
 func TestComposeDigestClean(t *testing.T) {
-	n := composeDigest(nil, nil, time.Unix(0, 0).UTC())
+	n := composeDigest(nil, nil, nil, time.Unix(0, 0).UTC())
 	if n.Level != courier.LevelInfo {
 		t.Fatalf("level = %v, want info for a clean fleet", n.Level)
 	}
@@ -71,7 +71,7 @@ func TestComposeDigestClean(t *testing.T) {
 // providers is a warning, not an error.
 func TestComposeDigestProxyOnlyIsWarning(t *testing.T) {
 	orphans := []reconcile.Orphan{{Slug: "whoami", Kind: spec.ProviderForwardAuth}}
-	n := composeDigest(nil, orphans, time.Unix(0, 0).UTC())
+	n := composeDigest(nil, orphans, nil, time.Unix(0, 0).UTC())
 	if n.Level != courier.LevelWarning {
 		t.Fatalf("level = %v, want warning for proxy-only orphans", n.Level)
 	}

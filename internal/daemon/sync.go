@@ -11,6 +11,7 @@ import (
 
 	"github.com/tagwright/aboard/internal/config"
 	"github.com/tagwright/aboard/internal/discovery"
+	"github.com/tagwright/aboard/internal/reconcile"
 	"github.com/tagwright/aboard/internal/spec"
 	"github.com/tagwright/aboard/internal/traefik"
 )
@@ -179,7 +180,44 @@ func (d *Daemon) refreshOrphans(ctx context.Context, enabledSlugs []string) {
 		d.notify(ctx, courier.LevelError, "aboard: orphan scan failed", err.Error())
 		return
 	}
+	d.alertNewOrphans(ctx, orphans)
 	d.setOrphans(orphans)
+}
+
+// alertNewOrphans fires an immediate beacon alert for each orphan that was not in
+// the previous orphan set, so a freshly-appeared orphan (the classic cause being a
+// changed aboard.slug, which strands the old slug's app+provider) is surfaced
+// loudly the moment it appears rather than waiting for the daily digest. An orphan
+// STILL attached to the outpost, or an OIDC orphan (live credentials), is an error
+// alert: an attached, renamed-away orphan still claims its external_host and is the
+// exact collision that turned fatal. A detached proxy orphan is a warning. The
+// daemon never deletes on this path (Fork 8 KEEP); it detects and surfaces, and
+// `aboard prune` does the detach-and-delete.
+func (d *Daemon) alertNewOrphans(ctx context.Context, orphans []reconcile.Orphan) {
+	prev := make(map[string]bool)
+	for _, o := range d.snapshotOrphans() {
+		prev[o.Key()] = true
+	}
+	for _, o := range orphans {
+		if prev[o.Key()] {
+			continue
+		}
+		slug := o.Slug
+		if slug == "" {
+			slug = "(dangling provider, no application)"
+		}
+		switch {
+		case o.Attached:
+			d.notify(ctx, courier.LevelError, "aboard: orphan attached to outpost",
+				slug+": aboard-owned "+string(o.Kind)+" provider has no enabled container yet is STILL attached to the outpost; it still claims its host and can collide with a new app. Run aboard prune")
+		case o.Kind == spec.ProviderOIDC:
+			d.notify(ctx, courier.LevelError, "aboard: orphaned OIDC provider",
+				slug+": orphaned OIDC provider (LIVE credentials). Run aboard prune and rotate")
+		default:
+			d.notify(ctx, courier.LevelWarning, "aboard: orphaned provider",
+				slug+": aboard-owned "+string(o.Kind)+" provider has no enabled container. Run aboard prune")
+		}
+	}
 }
 
 // notifySticky fires an immediate error alert for each newly-added sticky error,

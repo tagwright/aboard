@@ -42,6 +42,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -345,7 +346,10 @@ func (d *Daemon) snapshotOrphans() []reconcile.Orphan {
 	return out
 }
 
-// recordApplied stores the last-applied view for a slug.
+// recordApplied stores the last-applied view for a slug. res.Attached is the
+// go-live ground truth: after the go-live verification it is true only when the
+// live outpost actually serves the host, not merely when the provider is in the
+// DB list, so When is a genuine last-CONFIRMED-Authentik-write timestamp.
 func (d *Daemon) recordApplied(sp spec.Spec, res *reconcile.Result) {
 	d.mu.Lock()
 	d.applied[sp.Slug] = appliedView{
@@ -355,4 +359,18 @@ func (d *Daemon) recordApplied(sp spec.Spec, res *reconcile.Result) {
 		When:     d.now(),
 	}
 	d.mu.Unlock()
+}
+
+// snapshotApplied returns the last-applied views in a stable order (by slug), the
+// CONFIRMED side of the digest: what aboard last actually wrote to Authentik and
+// when, as opposed to what the labels merely DISCOVER.
+func (d *Daemon) snapshotApplied() []appliedView {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]appliedView, 0, len(d.applied))
+	for _, v := range d.applied {
+		out = append(out, v)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
+	return out
 }

@@ -41,7 +41,7 @@ func (d *Daemon) runDigest(ctx context.Context, interval time.Duration) {
 // and orphan state. It is exported so the CLI's `aboard status`-adjacent commands
 // (chunk 7) can trigger a digest on demand through the same path.
 func (d *Daemon) SendDigest(ctx context.Context) {
-	n := composeDigest(d.sticky.list(), d.snapshotOrphans(), d.now())
+	n := composeDigest(d.sticky.list(), d.snapshotOrphans(), d.snapshotApplied(), d.now())
 	if d.notifier == nil {
 		return
 	}
@@ -55,7 +55,7 @@ func (d *Daemon) SendDigest(ctx context.Context) {
 // level escalates by content: any sticky error or any live-credential OIDC orphan
 // is an error-level digest, a proxy-only orphan set is a warning, and a clean
 // fleet is an info heartbeat. Fields carry machine-readable counts.
-func composeDigest(sticky []stickyEntry, orphans []reconcile.Orphan, now time.Time) courier.Notification {
+func composeDigest(sticky []stickyEntry, orphans []reconcile.Orphan, applied []appliedView, now time.Time) courier.Notification {
 	var oidc, proxy []reconcile.Orphan
 	for _, o := range orphans {
 		if o.Kind == spec.ProviderOIDC {
@@ -81,14 +81,34 @@ func composeDigest(sticky []stickyEntry, orphans []reconcile.Orphan, now time.Ti
 	if len(oidc) > 0 {
 		fmt.Fprintf(&b, "\nOrphaned OIDC providers (LIVE credentials, prune first):\n")
 		for _, o := range oidc {
-			fmt.Fprintf(&b, "  - %s\n", o.Slug)
+			fmt.Fprintf(&b, "  - %s%s\n", o.Slug, attachedNote(o))
 		}
 	}
 
 	if len(proxy) > 0 {
-		fmt.Fprintf(&b, "\nOrphaned proxy providers (inert, no traffic reaches them):\n")
+		fmt.Fprintf(&b, "\nOrphaned proxy providers (inert unless still attached):\n")
 		for _, o := range proxy {
-			fmt.Fprintf(&b, "  - %s\n", o.Slug)
+			fmt.Fprintf(&b, "  - %s%s\n", o.Slug, attachedNote(o))
+		}
+	}
+
+	// Confirmed state: what aboard last actually WROTE to Authentik and when, and
+	// whether the go-live was confirmed live. This is the CONFIRMED side of the
+	// ground-truth distinction, so a reader never reads "container present" as
+	// "provisioned and live".
+	if len(applied) > 0 {
+		fmt.Fprintf(&b, "\nLast confirmed Authentik writes (CONFIRMED, not just discovered):\n")
+		for _, a := range applied {
+			state := "no outpost half"
+			if a.Provider == spec.ProviderForwardAuth {
+				if a.Attached {
+					state = "attached and served (go-live confirmed)"
+				} else {
+					state = "NOT confirmed live (attach unverified or stale)"
+				}
+			}
+			fmt.Fprintf(&b, "  - %s [%s]: %s, last write %s\n",
+				a.Slug, a.Provider, state, a.When.UTC().Format(time.RFC3339))
 		}
 	}
 
@@ -114,6 +134,16 @@ func composeDigest(sticky []stickyEntry, orphans []reconcile.Orphan, now time.Ti
 			"orphans_proxy": strconv.Itoa(len(proxy)),
 		},
 	}
+}
+
+// attachedNote flags an orphan that is STILL in the outpost's providers list, the
+// dangerous kind: it keeps claiming its external_host and can collide with a new
+// app on the same host. An unattached orphan gets no note.
+func attachedNote(o reconcile.Orphan) string {
+	if o.Attached {
+		return " (STILL ATTACHED to the outpost, collision risk, prune now)"
+	}
+	return ""
 }
 
 // parseSchedule turns the ABOARD_DIGEST_SCHEDULE cadence into a tick interval,
