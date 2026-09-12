@@ -58,10 +58,20 @@ type fakeReconciler struct {
 	orphansErr  error
 	teardowns   []string
 	teardownErr error
+
+	// live is the canned confirmed-live result status renders, and liveErr forces
+	// the confirm call to fail. A nil live with no error means confirm returns
+	// nothing (an empty confirmed section).
+	live    []reconcile.LiveResult
+	liveErr error
 }
 
 func (f *fakeReconciler) Orphans(context.Context, []string) ([]reconcile.Orphan, error) {
 	return f.orphans, f.orphansErr
+}
+
+func (f *fakeReconciler) ConfirmLive(context.Context, []reconcile.LiveCheck) ([]reconcile.LiveResult, error) {
+	return f.live, f.liveErr
 }
 
 func (f *fakeReconciler) Teardown(_ context.Context, slug string) error {

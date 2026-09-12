@@ -238,6 +238,59 @@ Authentik.
   verify), a security-relevant field aboard now manages explicitly rather than
   leaving to a server default.
 
+## Hardening against the 2026-09 incidents (fake-tier, fault-injected)
+
+Two production incidents (a redirect-loop outage from a duplicated `external_host`,
+and a silent go-live where aboard reported success while the live outpost served a
+stale set, #605) drove four guards. Each is unit-tested against the in-memory
+`fakeAPI` with the failure INJECTED, and each test asserts the fault SURFACES (a
+sticky error, nothing live), never a silent success, per the suite Testing
+Standard's fault-injection rule. What is fake-proven, and what still needs the live
+harness:
+
+1. **Duplicate `external_host` refusal.** Before any write, a forward-auth
+   reconcile lists the proxy providers and REFUSES with `duplicate-host` if another
+   aboard-owned provider already claims the host, so the outpost collision that
+   302-loops a domain is never created. `TestReconcile_DuplicateExternalHostRefused`
+   proves the refusal blocks all writes and the attach; the negative fixture
+   `TestReconcile_SameSlugSameHostNotACollision` proves a normal idempotent re-run
+   of the same slug is not false-flagged.
+
+2. **Renamed/removed orphan still attached to the outpost.** The orphan scan now
+   marks an orphan that is STILL in the embedded outpost's providers list
+   (`TestOrphans_MarksStillAttached`), and the daemon fires an immediate Error-level
+   beacon alert the moment such an orphan appears
+   (`TestRefreshOrphans_AttachedOrphanAlertsImmediately`), with de-dup so a standing
+   orphan does not spam (`TestRefreshOrphans_KnownOrphanNotReAlerted`). This is
+   surface-only on the daemon path: it DETECTS and alerts, and `aboard prune` does
+   the detach-and-delete. The daemon deliberately does not auto-detach (see the
+   design note below).
+
+3. **Go-live verification.** After the outpost attach, aboard probes the LIVE
+   embedded outpost to confirm it actually serves the host, rather than trusting the
+   DB providers list. A probe error surfaces `go-live-unverified`
+   (`TestReconcile_GoLiveProbeErrorSurfaces`); a provider that is in the DB list but
+   whose host the live outpost does not serve forces a config-reload PATCH and, still
+   unserved, surfaces `go-live-stale` with `Attached=false`
+   (`TestReconcile_GoLiveStaleAttachedButNotServedSurfaces`, which seeds the provider
+   already-in-list to reproduce the exact #605 skip-the-PATCH gap).
+
+4. **Ground-truth status.** `status` labels the enabled list as DISCOVERED (from
+   labels) and prints a CONFIRMED section from actual Authentik state: a provider
+   attached in the DB but not served by the live outpost reads as DRIFT, not fine
+   (`TestConfirmLive_AttachedButStaleIsDrift`,
+   `TestRunStatus_ConfirmedDriftAndDiscoveredLabel`), and an unprovisioned app reads
+   as DRIFT (`TestConfirmLive_NeverProvisionedIsDrift`). The daemon digest carries
+   the last-confirmed-write timestamp and the confirmed-vs-desired flag
+   (`TestComposeDigest_ConfirmedSectionAndAttachedOrphan`).
+
+The go-live verification and the status confirmed-section both call
+`OutpostServesHost`, a LIVE HTTP probe of the embedded outpost's forward-auth
+callback (a 404 means the host is not served). The reconciler's USE of it (attach
+then verify, force a reload when stale, surface a loud finding when unconfirmed) is
+fully fake-proven; the probe's own correctness against a real running outpost is a
+RESIDUAL below.
+
 ## What is PARTIAL
 
 - **OIDC adoption in place** is covered by the reconciler's code path (symmetric
@@ -256,6 +309,19 @@ Authentik.
   a browser through the redirect-login-callback loop. That end-to-end proof
   belongs to a real deployment; the Traefik verifier's correctness against a
   live fleet is the remaining unproven link.
+
+- **The live outpost serve probe (`OutpostServesHost`).** The go-live
+  verification and the status confirmed-section depend on the embedded outpost
+  returning a non-404 for a served host and a 404 for an unserved one (step 9
+  confirmed exactly this shape end to end). The probe's REST-level behavior against
+  the real 2025.6.4 outpost, and specifically that a forced reload PATCH clears a
+  genuinely stale outpost, still needs an integration-harness leg. The reconciler's
+  reaction to every probe outcome is fake-proven; the probe itself is live-only.
+
+- **Named (non-embedded) outpost go-live** is NOT verified: aboard cannot route to
+  a separate outpost's address, so `OutpostServesHost` targets the embedded outpost
+  only. For a named outpost the DB attach is the best aboard attests, and this gap
+  is called out at the attach site.
 
 - **Multi-page listings at fleet scale, and Podman** were not exercised here.
   SAML is now proven end-to-end (step 10); the one SAML-side residual is the same

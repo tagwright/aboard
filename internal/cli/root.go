@@ -67,11 +67,21 @@ type orphanReconciler interface {
 	Teardown(ctx context.Context, slug string) error
 }
 
+// statusReconciler is what status drives: the orphan scan plus the confirmed-live
+// check that reads ACTUAL Authentik state, so status can distinguish DISCOVERED
+// (from labels) from CONFIRMED (provisioned and served). *reconcile.Reconciler
+// satisfies it, and a test injects a fake.
+type statusReconciler interface {
+	Orphans(ctx context.Context, enabledSlugs []string) ([]reconcile.Orphan, error)
+	ConfirmLive(ctx context.Context, checks []reconcile.LiveCheck) ([]reconcile.LiveResult, error)
+}
+
 // Compile-time proof the real types satisfy the seams.
 var (
 	_ containerLister  = (*runtime.DockerRuntime)(nil)
 	_ containerLister  = (*runtime.PodmanRuntime)(nil)
 	_ orphanReconciler = (*reconcile.Reconciler)(nil)
+	_ statusReconciler = (*reconcile.Reconciler)(nil)
 )
 
 // Execute builds the command tree and runs it against os.Args.

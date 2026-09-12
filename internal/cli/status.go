@@ -121,10 +121,13 @@ func discoverEnabled(ctx context.Context, cfg *config.Config, lister containerLi
 	return apps, slugs, nil
 }
 
-// runStatus renders the read-only report. The orphan scan is the only Authentik
-// call, and it is a listing. A fake reconciler and colour-off ui make it testable
-// without a live IdP.
-func runStatus(ctx context.Context, cfg *config.Config, lister containerLister, rec orphanReconciler, u ui) error {
+// runStatus renders the read-only report. It draws the ground-truth distinction
+// the naming/scratchie incident turned on: the enabled-apps list is DISCOVERED
+// from container labels, while the confirmed-live section reads ACTUAL Authentik
+// state (is the provider provisioned, attached, AND served by the outpost), so a
+// reader cannot mistake "container present" for "provisioned and live". A fake
+// reconciler and colour-off ui make it testable without a live IdP.
+func runStatus(ctx context.Context, cfg *config.Config, lister containerLister, rec statusReconciler, u ui) error {
 	apps, slugs, err := discoverEnabled(ctx, cfg, lister)
 	if err != nil {
 		return err
@@ -135,15 +138,28 @@ func runStatus(ctx context.Context, cfg *config.Config, lister containerLister, 
 		return err
 	}
 
+	checks := make([]reconcile.LiveCheck, 0, len(apps))
+	for _, a := range apps {
+		checks = append(checks, reconcile.LiveCheck{Slug: a.slug, Host: a.host, Provider: a.provider})
+	}
+	live, err := rec.ConfirmLive(ctx, checks)
+	if err != nil {
+		return err
+	}
+
 	printEnabledApps(u, apps)
+	printConfirmed(u, live)
 	printFindings(u, apps)
 	printOrphans(u, orphans)
 	return nil
 }
 
-// printEnabledApps prints the enabled container to application mapping.
+// printEnabledApps prints the enabled container to application mapping. This is
+// DISCOVERED state (read from container labels), not proof of Authentik state: a
+// container can be present and enabled while Authentik was never provisioned. The
+// header says so, and the Confirmed section below reads the actual Authentik side.
 func printEnabledApps(u ui, apps []appView) {
-	u.printf("%s\n", u.bold("Enabled applications"))
+	u.printf("%s %s\n", u.bold("Enabled applications"), u.dim("(DISCOVERED from labels, not proof of Authentik state)"))
 	if len(apps) == 0 {
 		u.printf("  %s\n", u.dim("none: no container carries aboard.enable=true"))
 		return
@@ -160,6 +176,29 @@ func printEnabledApps(u ui, apps []appView) {
 			u.dim(host))
 		if a.metadataURL != "" {
 			u.printf("    %s %s\n", u.dim("SAML IdP metadata:"), a.metadataURL)
+		}
+	}
+}
+
+// printConfirmed prints the CONFIRMED-vs-DISCOVERED verdict per app, read from
+// actual Authentik state: a confirmed app is provisioned and (forward-auth) served
+// by the outpost, a drift is desired-but-not-live, and an unknown could not be
+// checked. This is the section that would have caught the incident where status
+// showed apps as fine that Authentik had never provisioned.
+func printConfirmed(u ui, live []reconcile.LiveResult) {
+	u.printf("\n%s %s\n", u.bold("Confirmed in Authentik"), u.dim("(CONFIRMED live state, not just discovered)"))
+	if len(live) == 0 {
+		u.printf("  %s\n", u.dim("none"))
+		return
+	}
+	for _, r := range live {
+		switch r.State {
+		case reconcile.LiveConfirmed:
+			u.printf("  %s  %s  %s\n", u.green("live "), u.cyan(r.Slug), u.dim(r.Detail))
+		case reconcile.LiveDrift:
+			u.printf("  %s  %s  %s\n", u.red("DRIFT"), u.cyan(r.Slug), u.red(r.Detail))
+		default:
+			u.printf("  %s  %s  %s\n", u.yellow("?    "), u.cyan(r.Slug), u.dim(r.Detail))
 		}
 	}
 }

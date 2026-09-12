@@ -49,6 +49,39 @@ func TestRunStatus_ReportsAppsAndOrphans(t *testing.T) {
 	}
 }
 
+// Fix 4 (ground truth): status labels the enabled list as DISCOVERED (from
+// labels, not proof of Authentik state) and prints the CONFIRMED-vs-desired
+// verdict, so an app the labels enable but Authentik drifted on reads as DRIFT.
+// This is the section that would have caught status reporting an unprovisioned
+// app as fine.
+func TestRunStatus_ConfirmedDriftAndDiscoveredLabel(t *testing.T) {
+	l := &fakeLister{containers: []runtime.Container{
+		container("wiki", map[string]string{
+			"aboard.enable":                         "true",
+			"aboard.host":                           "wiki.example.com",
+			"traefik.http.routers.wiki.rule":        "Host(`wiki.example.com`)",
+			"traefik.http.routers.wiki.middlewares": "authentik@docker",
+		}),
+	}}
+	rec := &fakeReconciler{
+		live: []reconcile.LiveResult{
+			{Slug: "wiki", State: reconcile.LiveDrift, Detail: "attached to the outpost but the LIVE outpost does not serve the host (stale)"},
+		},
+	}
+
+	u, buf := newTestUI()
+	if err := runStatus(context.Background(), testConfig(), l, rec, u); err != nil {
+		t.Fatalf("runStatus: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "DISCOVERED") {
+		t.Errorf("the enabled list must be labeled DISCOVERED, not presented as Authentik state:\n%s", out)
+	}
+	if !strings.Contains(out, "Confirmed in Authentik") || !strings.Contains(out, "DRIFT") {
+		t.Errorf("status must print the confirmed-live section and flag the drift:\n%s", out)
+	}
+}
+
 // TestRunStatus_SAMLMetadataAndOrphan proves status surfaces the IdP metadata URL
 // for an enabled SAML app and flags a SAML orphan distinctly from an OIDC one.
 func TestRunStatus_SAMLMetadataAndOrphan(t *testing.T) {
