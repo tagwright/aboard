@@ -33,6 +33,14 @@ type fakeAPI struct {
 	outpostsByName map[string]*authentik.Outpost
 	bindings       map[string][]authentik.PolicyBinding
 
+	// proxyList is what ListProxyProviders returns: the fleet-wide proxy providers
+	// (with external_host) the collision check scans. serves controls the live
+	// outpost serve probe per host, and servesDefault is the answer for a host with
+	// no explicit entry (default true, a live outpost that serves everything).
+	proxyList     []authentik.ProxyProvider
+	serves        map[string]bool
+	servesDefault bool
+
 	calls []string
 	errOn map[string]error
 
@@ -81,6 +89,8 @@ func newFake() *fakeAPI {
 		patchedSAML:    map[int]authentik.SAMLProviderRequest{},
 		patchedApps:    map[string]authentik.ApplicationRequest{},
 		iconSet:        map[string]string{},
+		serves:         map[string]bool{},
+		servesDefault:  true,
 	}
 }
 
@@ -148,6 +158,23 @@ func (f *fakeAPI) PatchProxyProvider(_ context.Context, pk int, body authentik.P
 		f.providerRefByPK[pk] = &authentik.ProviderRef{PK: pk, Name: body.Name, Component: authentik.ComponentProxyProvider}
 	}
 	return p, nil
+}
+
+func (f *fakeAPI) ListProxyProviders(_ context.Context, _ int) ([]authentik.ProxyProvider, error) {
+	if err := f.rec("ListProxyProviders"); err != nil {
+		return nil, err
+	}
+	return append([]authentik.ProxyProvider{}, f.proxyList...), nil
+}
+
+func (f *fakeAPI) OutpostServesHost(_ context.Context, host string) (bool, error) {
+	if err := f.rec("OutpostServesHost"); err != nil {
+		return false, err
+	}
+	if v, ok := f.serves[host]; ok {
+		return v, nil
+	}
+	return f.servesDefault, nil
 }
 
 func (f *fakeAPI) GetProviderByPK(_ context.Context, pk int) (*authentik.ProviderRef, error) {

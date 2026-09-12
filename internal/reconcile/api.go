@@ -44,6 +44,11 @@ type API interface {
 	PatchProxyProvider(ctx context.Context, pk int, body authentik.ProxyProviderRequest) (*authentik.ProxyProvider, error)
 	DeleteProxyProvider(ctx context.Context, pk int) error
 
+	// ListProxyProviders enumerates every proxy provider with its external_host,
+	// for the external-host collision check: two aboard-owned providers claiming
+	// the same external_host collide in the outpost and 302-loop forever.
+	ListProxyProviders(ctx context.Context, pageSize int) ([]authentik.ProxyProvider, error)
+
 	// Provider type by pk, for adoption: the polymorphic detail route is the only
 	// type-accurate way to learn the type of the provider an application points
 	// at (the oauth2 list also returns proxy providers, a subclass).
@@ -96,6 +101,11 @@ type API interface {
 	GetEmbeddedOutpost(ctx context.Context) (*authentik.Outpost, error)
 	GetOutpostByName(ctx context.Context, name string) (*authentik.Outpost, error)
 	PatchOutpostProviders(ctx context.Context, pk string, providers []int) (*authentik.Outpost, error)
+
+	// OutpostServesHost probes the LIVE embedded outpost to confirm it actually
+	// serves a forward-auth host, the go-live ground truth the DB providers list
+	// cannot give (an attached-but-stale outpost reads fine in the list yet 404s).
+	OutpostServesHost(ctx context.Context, host string) (bool, error)
 }
 
 // Compile-time proof that the real client satisfies the seam structurally, so

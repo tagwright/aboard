@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strconv"
 
 	"github.com/tagwright/aboard/internal/authentik"
 	"github.com/tagwright/aboard/internal/spec"
@@ -22,10 +23,25 @@ const orphanListPageSize = 100
 // reconcile. Kind lets the digest list OIDC orphans (live credentials) first and
 // separately from harmless proxy ones. Slug is the assigned application slug the
 // orphan is keyed on, empty for a dangling provider that has no application.
+//
+// Attached is true when a forward-auth orphan is STILL in the embedded outpost's
+// providers list. This is the dangerous kind: an orphan left attached (the classic
+// cause being a changed aboard.slug, which leaves the old slug's app+provider
+// behind still serving its external_host) collides with the new app's host and
+// can 302-loop the domain. A still-attached orphan is surfaced loudly and alerted
+// immediately, not left to the daily digest.
 type Orphan struct {
 	Slug       string
 	Kind       spec.ProviderType
 	ProviderPK int
+	Attached   bool
+}
+
+// Key is the stable identity of an orphan for alert de-duplication: its kind, pk,
+// and slug. The daemon alerts a newly-appeared orphan once rather than on every
+// scan.
+func (o Orphan) Key() string {
+	return string(o.Kind) + ":" + strconv.Itoa(o.ProviderPK) + ":" + o.Slug
 }
 
 // Orphans returns the aboard-owned providers whose assigned application slug is
@@ -45,6 +61,18 @@ func (r *Reconciler) Orphans(ctx context.Context, enabledSlugs []string) ([]Orph
 		return nil, err
 	}
 
+	// The embedded outpost's providers list, so a forward-auth orphan can be
+	// flagged as STILL attached (the dangerous, collision-causing kind). An absent
+	// embedded outpost is not an error here: no outpost means nothing is attached.
+	attachedPKs := map[int]bool{}
+	if outpost, oerr := r.api.GetEmbeddedOutpost(ctx); oerr == nil {
+		for _, pk := range outpost.Providers {
+			attachedPKs[pk] = true
+		}
+	} else if !errors.Is(oerr, authentik.ErrNotFound) {
+		return nil, oerr
+	}
+
 	enabled := make(map[string]bool, len(enabledSlugs))
 	for _, s := range enabledSlugs {
 		enabled[s] = true
@@ -62,6 +90,7 @@ func (r *Reconciler) Orphans(ctx context.Context, enabledSlugs []string) ([]Orph
 			Slug:       p.AssignedApplicationSlug,
 			Kind:       providerKindFromComponent(p.Component),
 			ProviderPK: p.PK,
+			Attached:   attachedPKs[p.PK],
 		})
 	}
 

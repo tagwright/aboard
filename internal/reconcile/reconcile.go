@@ -84,6 +84,28 @@ const (
 	// aboard.saml.mappings) that does not resolve. Sticky.
 	CodeSAMLMappingMissing = "saml-mapping-missing"
 
+	// CodeDuplicateHost is a forward-auth reconcile that would make a SECOND
+	// aboard-owned provider claim an external_host another aboard-owned provider
+	// already claims. Two providers on one external_host collide in the embedded
+	// outpost's host-to-provider map, so the session/OAuth state issued by one is
+	// validated against the other and auth 302-loops forever. aboard REFUSES to
+	// create the collision: it skips the container and alerts, rather than taking
+	// an app down. Sticky. A duplicated external_host across aboard-owned providers
+	// is never valid.
+	CodeDuplicateHost = "duplicate-host"
+
+	// CodeGoLiveUnverified is a forward-auth attach that succeeded against the DB
+	// but whose go-live could NOT be verified against the live outpost (the serve
+	// probe errored). aboard does not report success it could not confirm. Sticky.
+	CodeGoLiveUnverified = "go-live-unverified"
+
+	// CodeGoLiveStale is a forward-auth provider that is in the outpost's DB
+	// providers list yet the LIVE outpost does not serve its host, even after a
+	// forced config reload. The provider is attached but not live (the #605 class:
+	// aboard reported go-live on attach alone while the outpost served a stale
+	// set). Sticky.
+	CodeGoLiveStale = "go-live-stale"
+
 	// CodeAPI is any other Authentik REST failure (a create, patch, delete, or
 	// list that errored for a reason other than not-found). Sticky.
 	CodeAPI = "api-error"
@@ -261,6 +283,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, s spec.Spec) (*Result, error
 		}
 	}
 
+	// External-host collision refusal (forward-auth only), BEFORE any provider
+	// write. A second aboard-owned provider on an external_host another aboard
+	// provider already claims collides in the embedded outpost and 302-loops
+	// forever, so aboard refuses to create it rather than take an app down. The
+	// provider this reconcile will own (the marker-named one on a re-run, or the
+	// adopted provider being renamed in place) is excluded, so a re-run of the same
+	// slug never collides with itself.
+	if s.Provider == spec.ProviderForwardAuth {
+		if err := r.checkExternalHostCollision(ctx, res, s, markerName, adoptPK); err != nil {
+			return res, err
+		}
+	}
+
 	// Step b: provider convergence. The provider is always named "<slug>
 	// (aboard)", the ownership marker (Fork 2).
 	var providerPK int
@@ -297,12 +332,45 @@ func (r *Reconciler) Reconcile(ctx context.Context, s spec.Spec) (*Result, error
 	// provider unattached and nothing live (Fork 4; "Must verify empirically"
 	// item 2). OIDC has no outpost step.
 	if s.Provider == spec.ProviderForwardAuth {
-		if err := r.attachOutpost(ctx, res, effOutpost, providerPK); err != nil {
+		if err := r.attachOutpost(ctx, res, effOutpost, providerPK, s.Host); err != nil {
 			return res, err
 		}
 	}
 
 	return res, nil
+}
+
+// checkExternalHostCollision refuses a forward-auth reconcile that would leave two
+// aboard-owned providers claiming the same external_host. It lists every proxy
+// provider, and if any OTHER aboard-owned one (not the marker-named provider this
+// slug owns, and not the provider being adopted in place) already carries
+// external_host "https://<host>", it fails with CodeDuplicateHost BEFORE any
+// write, so the collision is never created. This is the direct guard against the
+// redirect-loop outage a duplicate external_host caused.
+func (r *Reconciler) checkExternalHostCollision(ctx context.Context, res *Result, s spec.Spec, markerName string, adoptPK *int) error {
+	provs, err := r.api.ListProxyProviders(ctx, orphanListPageSize)
+	if err != nil {
+		return r.fail(res, CodeAPI, "list proxy providers for external-host collision check: "+err.Error())
+	}
+	want := "https://" + s.Host
+	for _, p := range provs {
+		if !isAboardProviderName(p.Name) {
+			continue
+		}
+		if p.Name == markerName {
+			continue // the provider this slug already owns, not a collision
+		}
+		if adoptPK != nil && p.PK == *adoptPK {
+			continue // the provider being adopted (renamed) in place
+		}
+		if p.ExternalHost == want {
+			return r.fail(res, CodeDuplicateHost,
+				"external_host "+want+" is already claimed by aboard-owned provider "+p.Name+
+					"; two providers on one host collide in the embedded outpost and auth-loop forever. "+
+					"Resolve the duplicate (prune the orphaned/renamed app) before this app can go live")
+		}
+	}
+	return nil
 }
 
 // CodeProviderUnknown is an unrecognized provider type reaching the reconciler.
@@ -821,7 +889,15 @@ func (r *Reconciler) convergeBindings(ctx context.Context, res *Result, appPK st
 // PATCHes the whole list back, read-modify-write, never dropping a provider it
 // does not own (Fork 4). "embedded" resolves by the managed marker, any other
 // name by exact name.
-func (r *Reconciler) attachOutpost(ctx context.Context, res *Result, outpostName string, providerPK int) error {
+//
+// Membership in the DB list is NOT go-live: the live outpost can serve a stale
+// provider set while the list reads correct (the #605 incident, where aboard
+// reported success on the attach alone and the app 404'd). So after the attach,
+// for the embedded outpost, it VERIFIES the live outpost actually serves the host,
+// forces a config reload if it does not, and surfaces a loud finding (leaving
+// Attached false) if it still cannot confirm, rather than reporting a go-live it
+// could not verify.
+func (r *Reconciler) attachOutpost(ctx context.Context, res *Result, outpostName string, providerPK int, host string) error {
 	var outpost *authentik.Outpost
 	var err error
 	if outpostName == config.DefaultOutpost {
@@ -836,17 +912,64 @@ func (r *Reconciler) attachOutpost(ctx context.Context, res *Result, outpostName
 		return r.fail(res, CodeAPI, "look up outpost "+outpostName+": "+err.Error())
 	}
 
-	if containsInt(outpost.Providers, providerPK) {
-		res.Attached = true
+	if !containsInt(outpost.Providers, providerPK) {
+		merged := append(append([]int{}, outpost.Providers...), providerPK)
+		if _, perr := r.api.PatchOutpostProviders(ctx, outpost.PK, merged); perr != nil {
+			return r.fail(res, CodeAPI, "attach provider to outpost "+outpostName+": "+perr.Error())
+		}
+		res.Actions = append(res.Actions, "attached provider to outpost "+outpostName)
+	}
+
+	// Verify go-live against the LIVE embedded outpost. A named (non-embedded)
+	// outpost has its own address aboard cannot reach, so the live probe is only
+	// meaningful for the embedded one; for a named outpost the DB attach is the
+	// best aboard can attest, and the residual is documented in docs/TESTING.md.
+	if outpostName == config.DefaultOutpost {
+		if err := r.verifyGoLive(ctx, res, outpost, providerPK, host); err != nil {
+			return err
+		}
+	}
+
+	res.Attached = true
+	return nil
+}
+
+// verifyGoLive confirms the live embedded outpost actually serves host, not merely
+// that the provider is in the DB list. If the probe says the host is unserved (an
+// attached-but-stale outpost), it forces a config reload by re-PATCHing the
+// providers list and probes once more. A probe error is CodeGoLiveUnverified and a
+// still-unserved host after the reload is CodeGoLiveStale; both leave Attached
+// false, because aboard must never report a go-live it could not confirm.
+func (r *Reconciler) verifyGoLive(ctx context.Context, res *Result, outpost *authentik.Outpost, providerPK int, host string) error {
+	serves, err := r.api.OutpostServesHost(ctx, host)
+	if err != nil {
+		return r.fail(res, CodeGoLiveUnverified, "could not verify the outpost serves host "+host+": "+err.Error())
+	}
+	if serves {
 		return nil
 	}
 
-	merged := append(append([]int{}, outpost.Providers...), providerPK)
-	if _, perr := r.api.PatchOutpostProviders(ctx, outpost.PK, merged); perr != nil {
-		return r.fail(res, CodeAPI, "attach provider to outpost "+outpostName+": "+perr.Error())
+	// Attached in the DB but not served live: force a reload by re-PATCHing the
+	// providers list (with the provider present), which re-triggers the outpost's
+	// config push, then re-probe once.
+	merged := append([]int{}, outpost.Providers...)
+	if !containsInt(merged, providerPK) {
+		merged = append(merged, providerPK)
 	}
-	res.Attached = true
-	res.Actions = append(res.Actions, "attached provider to outpost "+outpostName)
+	if _, perr := r.api.PatchOutpostProviders(ctx, outpost.PK, merged); perr != nil {
+		return r.fail(res, CodeAPI, "force outpost reload for host "+host+": "+perr.Error())
+	}
+	res.Actions = append(res.Actions, "forced outpost config reload for host "+host)
+
+	serves, err = r.api.OutpostServesHost(ctx, host)
+	if err != nil {
+		return r.fail(res, CodeGoLiveUnverified, "could not verify the outpost serves host "+host+" after a forced reload: "+err.Error())
+	}
+	if !serves {
+		return r.fail(res, CodeGoLiveStale,
+			"provider is in the outpost's providers list but the live outpost does not serve host "+host+
+				" even after a forced reload: the outpost is attached but stale, the app is not live")
+	}
 	return nil
 }
 
