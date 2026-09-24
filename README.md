@@ -1,6 +1,6 @@
 # Aboard
 
-Label-driven single sign-on for Authentik. Aboard watches the Docker socket,
+Label-driven single sign-on for [Authentik](https://goauthentik.io). Aboard watches the Docker socket,
 reads `aboard.*` labels off a container, and reconciles the matching state
 inside Authentik over Authentik's REST API: the Application, the Provider, the
 group and policy bindings, and, for forward-auth, the embedded-outpost

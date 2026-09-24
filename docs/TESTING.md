@@ -32,16 +32,16 @@ Two layers, in increasing order of how much they prove:
    drive that is: create real labeled containers, run the real daemon boot pass,
    and `curl` the real REST API for the result.
 
-   - `docker-compose.yml` — the disposable Authentik stack (self-contained, no
+   - `docker-compose.yml`: the disposable Authentik stack (self-contained, no
      host bind mounts of any production file).
-   - `aboard.yml` — points at `http://aboard-itest-server:9000`, token by NAME.
-   - `secrets/` — the throwaway API token and OIDC client-secret files
+   - `aboard.yml`: points at `http://aboard-itest-server:9000`, token by NAME.
+   - `secrets/`: the throwaway API token and OIDC client-secret files
      (git-ignored; the token is a bootstrap throwaway for the ephemeral instance
      only).
-   - `pass.sh` — runs ONE real `aboard daemon` boot reconcile pass against the
+   - `pass.sh`: runs ONE real `aboard daemon` boot reconcile pass against the
      disposable Authentik and dumps its log. `CREATE_GROUPS=true` sets
      `ABOARD_CREATE_GROUPS`.
-   - `api.sh METHOD PATH [BODYFILE]` — a curl helper that runs inside
+   - `api.sh METHOD PATH [BODYFILE]`: a curl helper that runs inside
      `aboard-itest-net` (this host cannot route to the bridge IP directly, so
      both aboard and the assertions reach the server by its network name, exactly
      as a real deployment does).
