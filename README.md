@@ -180,6 +180,8 @@ walked through in [docs/DEPLOY.md](docs/DEPLOY.md).
   the OIDC groups scope mapping aboard references but never creates.
 - [docs/TESTING.md](docs/TESTING.md): what is proven live, what is unit-only,
   and the honest coverage matrix.
+- [docs/SECURITY.md](docs/SECURITY.md): what aboard holds, the token's blast
+  radius, and how to report a vulnerability.
 
 ## Build and run
 
