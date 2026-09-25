@@ -40,7 +40,12 @@
 # Ratchet raised 2026-09-25: internal/daemon climbed to 83.7% when the graceful
 # shutdown flush and the single-removal sticky clear were wired in with their
 # tests, so its floor rises from 78 to 83 to lock the gain in.
+#
+# Ratchet raised 2026-09-25: internal/daemon climbed to 84.1% when the graceful
+# shutdown drain was made progress-aware (a stall window plus an absolute ceiling
+# replacing the single blind deadline) with its three fault-injected tests, so its
+# floor rises from 83 to 84 to lock the gain in.
 internal/authentik 56
-internal/daemon 83
+internal/daemon 84
 internal/discovery 89
 internal/reconcile 75

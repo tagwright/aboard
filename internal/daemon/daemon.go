@@ -46,8 +46,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tagwright/courier"
 	"github.com/tagwright/core/runtime"
+	"github.com/tagwright/courier"
 
 	"github.com/tagwright/aboard/internal/config"
 	"github.com/tagwright/aboard/internal/reconcile"
@@ -61,13 +61,24 @@ import (
 // enough that a real change reconciles promptly.
 const DefaultDebounceWindow = 750 * time.Millisecond
 
-// DefaultShutdownDrain bounds the graceful shutdown drain: after the socket watch
-// stops, Run flushes the debouncer's pending coalesced changes onto the serial
-// queue and lets the worker drain them, but only for this long. If an in-flight
-// reconcile hangs (a stuck Authentik REST call), the deadline cancels the worker
-// so shutdown always completes rather than wedging. A clean drain returns well
-// inside it; this is a ceiling, not a wait.
-const DefaultShutdownDrain = 10 * time.Second
+// DefaultShutdownStall bounds how long the graceful drain waits with NO job
+// completing before it treats the in-flight reconcile as hung and cancels the
+// worker. It is progress-relative, not a global deadline: a healthy backlog
+// completes a job well within this window, so a steady stream of completions
+// keeps resetting it and the drain runs for as long as real progress continues,
+// however large the backlog. Only a genuinely stuck reconcile (a wedged Authentik
+// REST call that never returns) lets this window elapse, and then it is cut
+// promptly rather than at a fixed whole-drain deadline.
+const DefaultShutdownStall = 5 * time.Second
+
+// DefaultShutdownCeiling is the absolute backstop on the graceful drain: however
+// much progress the worker keeps reporting, the drain cannot outlive this ceiling.
+// It caps a pathological case that keeps "completing" trivial work forever (which
+// would keep resetting the stall window and never let it fire), so the drain
+// always self-bounds. It is set below a typical service-manager stop timeout
+// (systemd SIGKILLs at TimeoutStopSec), so aboard cancels its own in-flight work
+// cleanly rather than being killed mid-write.
+const DefaultShutdownCeiling = 30 * time.Second
 
 // DefaultDockerSocket is the socket BuildRuntime dials for runtime "docker" when
 // no socket override is configured. aboard reads the socket, it never writes to
@@ -164,7 +175,18 @@ type Daemon struct {
 
 	debounceWindow time.Duration
 	digestSchedule string
-	shutdownDrain  time.Duration
+
+	// shutdownStall and shutdownCeiling bound the graceful drain (see Run). They
+	// are set from the Default* consts in New so a test can inject small values and
+	// drive the watchdog deterministically.
+	shutdownStall   time.Duration
+	shutdownCeiling time.Duration
+
+	// jobDone is the drain watchdog's progress signal: the serial worker does a
+	// non-blocking send on it after every job it finishes, and the shutdown drain
+	// resets its stall timer on each one. Size 1 so a burst coalesces to a single
+	// pending signal and the send never blocks the worker.
+	jobDone chan struct{}
 
 	queue  *workQueue
 	deb    *debouncer
@@ -226,19 +248,21 @@ func New(cfg Config) (*Daemon, error) {
 	}
 
 	d := &Daemon{
-		rt:             cfg.Runtime,
-		reconciler:     cfg.Reconciler,
-		notifier:       cfg.Notifier,
-		cfg:            cfg.Config,
-		log:            log,
-		now:            now,
-		debounceWindow: window,
-		digestSchedule: schedule,
-		shutdownDrain:  DefaultShutdownDrain,
-		queue:          newWorkQueue(),
-		sticky:         newStickySet(),
-		applied:        map[string]appliedView{},
-		slugByKey:      map[string]string{},
+		rt:              cfg.Runtime,
+		reconciler:      cfg.Reconciler,
+		notifier:        cfg.Notifier,
+		cfg:             cfg.Config,
+		log:             log,
+		now:             now,
+		debounceWindow:  window,
+		digestSchedule:  schedule,
+		shutdownStall:   DefaultShutdownStall,
+		shutdownCeiling: DefaultShutdownCeiling,
+		jobDone:         make(chan struct{}, 1),
+		queue:           newWorkQueue(),
+		sticky:          newStickySet(),
+		applied:         map[string]appliedView{},
+		slugByKey:       map[string]string{},
 	}
 	// The debouncer's flush enqueues a coalesced per-service sync onto the single
 	// serial queue. onFlush is called from a timer goroutine with no context, so
@@ -270,8 +294,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// pending work onto the queue and let the worker drain it; if the worker shared
 	// the already-cancelled ctx it would abort every in-flight reconcile the moment
 	// ctx was done, so the flush would enqueue work that never ran. workerCtx keeps
-	// the drain alive, and the bounded wait below (shutdownDrain) cancels it if a
-	// reconcile hangs, so shutdown still always completes.
+	// the drain alive, and the progress-aware watchdog below cancels it if a
+	// reconcile hangs or the absolute ceiling fires, so shutdown still always
+	// completes.
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 	defer cancelWorker()
 
@@ -314,20 +339,67 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.queue.close()
 
 	// Wait for the worker (and the digest goroutine, already unwound by ctx) to
-	// drain, but bound it: if a reconcile hangs, cancel workerCtx so the worker
-	// stops and shutdown completes rather than wedging forever.
+	// drain, but bound it with a PROGRESS-AWARE watchdog rather than one blind
+	// whole-drain deadline. A healthy backlog that keeps completing jobs drains in
+	// full, however long that takes; only a lack of progress or the absolute
+	// ceiling cuts it short:
+	//
+	//   - The worker signals every completed job on d.jobDone, and each signal
+	//     resets the stall timer, so a steady stream of completions never trips it.
+	//   - The stall timer fires only when NO job completes for shutdownStall, the
+	//     signature of a hung reconcile (a wedged Authentik REST call). Then the
+	//     worker is cancelled and the hang is cut promptly, not after a fixed 10s a
+	//     large healthy backlog would also have blown.
+	//   - The ceiling timer is absolute and never reset, so a pathological stream
+	//     that keeps completing trivial work forever (which would keep resetting the
+	//     stall window) still cannot outlive shutdownCeiling. The drain always
+	//     self-bounds below the service manager's stop timeout.
 	drained := make(chan struct{})
 	go func() {
 		wg.Wait()
 		close(drained)
 	}()
+
+	// Clear any completion left in the buffer from normal operation, so the first
+	// stall window measures progress made DURING the drain, not before it.
 	select {
-	case <-drained:
-	case <-time.After(d.shutdownDrain):
-		d.log.Warn("shutdown drain exceeded deadline, cancelling in-flight reconcile",
-			"deadline", d.shutdownDrain.String())
-		cancelWorker()
-		<-drained
+	case <-d.jobDone:
+	default:
+	}
+
+	stall := time.NewTimer(d.shutdownStall)
+	defer stall.Stop()
+	ceiling := time.NewTimer(d.shutdownCeiling)
+	defer ceiling.Stop()
+
+	for done := false; !done; {
+		select {
+		case <-drained:
+			// The worker finished every pending job on its own: a clean drain.
+			done = true
+		case <-d.jobDone:
+			// The worker completed a job: progress. Reset the stall window. The
+			// Stop-then-drain guards the reset against a timer that just fired.
+			if !stall.Stop() {
+				select {
+				case <-stall.C:
+				default:
+				}
+			}
+			stall.Reset(d.shutdownStall)
+		case <-stall.C:
+			d.log.Warn("shutdown drain stalled, cancelling in-flight reconcile",
+				"stall", d.shutdownStall.String())
+			cancelWorker()
+			<-drained
+			done = true
+		case <-ceiling.C:
+			d.log.Warn("shutdown drain hit absolute ceiling, cancelling in-flight reconcile",
+				"ceiling", d.shutdownCeiling.String())
+			cancelWorker()
+			<-drained
+			done = true
+		}
 	}
 
 	d.log.Info("aboard daemon stopped")

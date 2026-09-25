@@ -302,6 +302,34 @@ then verify, force a reload when stale, surface a loud finding when unconfirmed)
 fully fake-proven; the probe's own correctness against a real running outpost is a
 RESIDUAL below.
 
+## Graceful-shutdown drain is progress-aware (fault-injected)
+
+On shutdown the daemon flushes the debouncer's settled changes onto the serial
+queue and drains them before returning. That drain is bounded by a progress-aware
+watchdog rather than one blind whole-drain deadline. The worker signals every
+completed job, each signal resets a stall timer, and a separate absolute ceiling
+caps the whole drain. A healthy backlog that keeps completing jobs drains in full
+however long it takes, only a reconcile that makes no progress for the stall
+window is cut, and the ceiling backstops a pathological case so the drain always
+self-bounds below the service manager's stop timeout (systemd SIGKILLs at
+TimeoutStopSec). All three bounds are injected as small durations, so the tests
+run in milliseconds with no live dependency:
+
+- `TestShutdownDrainProgressNotPunished` flushes a backlog whose total drain
+  outlasts the stall window while each job completes well inside it, and asserts
+  every job drains and nothing is cancelled. This is the core proof that a
+  healthy, progressing backlog is no longer guillotined by a fixed deadline the
+  way a blind 10s ceiling once did.
+- `TestShutdownDrainStallCancelsHungReconcile` flushes a reconcile that blocks
+  forever, and asserts the WORKER context is cancelled about one stall window
+  after it wedges (not at the far-off ceiling), the stall-cancel warning is
+  logged, and Run returns. This is the hung-reconcile cut a stuck Authentik REST
+  call needs.
+- `TestShutdownDrainCeilingCapsPathologicalStream` injects a job that keeps
+  reporting progress forever, which perpetually resets the stall window, and
+  asserts only the absolute ceiling stops it, cancelling the worker at the
+  ceiling with its own distinct warning.
+
 ## The go-live poll empirical result (b3)
 
 The b2 go-live verification forced the outpost reload and re-probed ONCE,

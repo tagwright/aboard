@@ -109,5 +109,19 @@ func (d *Daemon) runWorker(ctx context.Context) {
 			return
 		}
 		j.run(ctx)
+		d.signalJobDone()
+	}
+}
+
+// signalJobDone reports that the worker just finished a job. It is the shutdown
+// drain watchdog's progress signal (see Run): a non-blocking send onto the size-1
+// jobDone channel, so recording a completion never blocks the worker and a burst
+// of completions coalesces to one pending signal. The drain only needs to know
+// that progress happened, not how much; outside a drain no one reads the channel
+// and the buffer simply holds the latest signal.
+func (d *Daemon) signalJobDone() {
+	select {
+	case d.jobDone <- struct{}{}:
+	default:
 	}
 }

@@ -6,7 +6,10 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -110,12 +113,51 @@ func TestShutdownFlushesPendingReconcile(t *testing.T) {
 	}
 }
 
+// enabledContainer builds a healthy, opted-in forward-auth container that
+// reconciles cleanly, one per distinct service name/host.
+func enabledContainer(svc string) runtime.Container {
+	return runtime.Container{
+		Name:    svc,
+		Service: svc,
+		Image:   "example/" + svc,
+		State:   "running",
+		Labels: map[string]string{
+			"aboard.enable": "true",
+			"aboard.host":   svc + ".example.org",
+		},
+	}
+}
+
+// delayingReconciler makes each reconcile take a fixed, ctx-respecting delay,
+// standing in for a HEALTHY but non-instant backend call. It is how a multi-job
+// drain takes real (small, injected) time while every individual job still
+// completes well within the stall window, which is the exact shape the old blind
+// global deadline punished. It records reconciled slugs like fakeReconciler.
+type delayingReconciler struct {
+	fakeReconciler
+	delay time.Duration
+}
+
+func (r *delayingReconciler) Reconcile(ctx context.Context, s spec.Spec) (*reconcile.Result, error) {
+	select {
+	case <-time.After(r.delay):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return r.fakeReconciler.Reconcile(ctx, s)
+}
+
 // blockingReconciler hangs in Reconcile until its context is cancelled, standing
-// in for a stuck Authentik REST call so the bounded-drain deadline can be
-// exercised. It respects ctx so the deadline's cancel actually unblocks it.
+// in for a stuck Authentik REST call (a reconcile that makes NO progress) so the
+// stall watchdog can be exercised. It respects ctx so the watchdog's cancel
+// actually unblocks it, and it records the ctx error it observed so a test can
+// assert the WORKER context was the thing cancelled.
 type blockingReconciler struct {
 	fakeReconciler
 	entered chan struct{}
+
+	mu     sync.Mutex
+	ctxErr error
 }
 
 func (b *blockingReconciler) Reconcile(ctx context.Context, _ spec.Spec) (*reconcile.Result, error) {
@@ -124,26 +166,117 @@ func (b *blockingReconciler) Reconcile(ctx context.Context, _ spec.Spec) (*recon
 	default:
 	}
 	<-ctx.Done()
+	b.mu.Lock()
+	b.ctxErr = ctx.Err()
+	b.mu.Unlock()
 	return nil, ctx.Err()
 }
 
-// TestShutdownDrainBoundedByDeadline proves the graceful flush cannot wedge
-// shutdown: if a flushed reconcile hangs, the drain deadline cancels the worker
-// and Run still returns. Without the bound, a stuck reconcile would block Run
-// forever.
-func TestShutdownDrainBoundedByDeadline(t *testing.T) {
+func (b *blockingReconciler) observedCtxErr() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.ctxErr
+}
+
+// TestShutdownDrainProgressNotPunished is acceptance criterion 1: a HEALTHY
+// backlog whose TOTAL drain time exceeds the stall window (so a single blind
+// deadline of that size, the old design's shape, would have guillotined it
+// mid-flight), but where each individual job completes well within the stall
+// window, drains EVERY job and cancels nothing. This is the core proof that
+// progress is no longer punished.
+func TestShutdownDrainProgressNotPunished(t *testing.T) {
+	const backlog = 12
+
 	rt := newFakeRuntime()
-	c := runtime.Container{
-		Name:    "nutrition",
-		Service: "nutrition",
-		Image:   "example/nutrition",
-		State:   "running",
-		Labels: map[string]string{
-			"aboard.enable": "true",
-			"aboard.host":   "nutrition.example.org",
-		},
+	for i := 0; i < backlog; i++ {
+		rt.inspectByID[fmt.Sprintf("live-%d", i)] = enabledContainer(fmt.Sprintf("svc%d", i))
 	}
-	rt.inspectByID["live-id"] = c
+	// rt.containers stays empty: the boot full pass reconciles nothing, so every
+	// reconcile observed is a drained backlog job, not the boot pass.
+
+	rec := &delayingReconciler{delay: 15 * time.Millisecond}
+	logBuf := &syncBuffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	d, err := New(Config{
+		Runtime:        rt,
+		Reconciler:     rec,
+		Notifier:       &capturingNotifier{},
+		Config:         testConfig(),
+		Logger:         logger,
+		DebounceWindow: 30 * time.Second, // the pending set only flushes on shutdown
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// One healthy job (15ms) sits far inside the stall window, so a steady stream
+	// of completions keeps resetting it; the ceiling is far away so only progress
+	// governs this test.
+	d.shutdownStall = 100 * time.Millisecond
+	d.shutdownCeiling = 10 * time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runErr := make(chan error, 1)
+	go func() { runErr <- d.Run(ctx) }()
+
+	// Land every backlog service in the debouncer as pending. The 30s window means
+	// none fire on their own; they exist only to be flushed at shutdown.
+	for i := 0; i < backlog; i++ {
+		svc := fmt.Sprintf("svc%d", i)
+		rt.events <- runtime.Event{
+			Type:   runtime.EventStart,
+			ID:     fmt.Sprintf("live-%d", i),
+			Name:   svc,
+			Labels: map[string]string{composeServiceLabel: svc},
+		}
+	}
+	if !waitFor(func() bool { return d.deb.pendingCount() == backlog }, 3*time.Second) {
+		cancel()
+		<-runErr
+		t.Fatalf("only %d of %d events became pending in the debouncer", d.deb.pendingCount(), backlog)
+	}
+	if got := rec.reconciledSlugs(); len(got) != 0 {
+		cancel()
+		<-runErr
+		t.Fatalf("reconciled %v before shutdown, want none (the backlog must not have fired early)", got)
+	}
+
+	start := time.Now()
+	cancel() // shutdown: flush the whole backlog onto the queue, then drain it
+
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run returned an error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after ctx cancel")
+	}
+	elapsed := time.Since(start)
+
+	// Every job drained: a healthy, progressing backlog is not punished.
+	if got := rec.reconciledSlugs(); len(got) != backlog {
+		t.Fatalf("drained %d of %d backlog jobs; a healthy backlog must drain in FULL: %v", len(got), backlog, got)
+	}
+	// Nothing was cancelled, by either bound.
+	if s := logBuf.String(); strings.Contains(s, "cancelling in-flight reconcile") {
+		t.Fatalf("the drain cancelled the worker on a HEALTHY backlog; progress was punished. log:\n%s", s)
+	}
+	// The whole drain outlasted the stall window: a single blind deadline of that
+	// size (the old shape) would have cut this backlog off, but progress-awareness
+	// let it finish.
+	if elapsed < d.shutdownStall {
+		t.Fatalf("drain finished in %s, not longer than the %s stall window: the test never actually exceeded a single-deadline bound", elapsed, d.shutdownStall)
+	}
+}
+
+// TestShutdownDrainStallCancelsHungReconcile is acceptance criterion 2: a
+// reconcile that HANGS (blocks indefinitely, making no progress) is cancelled
+// roughly one stall-window after it wedges, and shutdown then completes. It
+// asserts the WORKER context was cancelled and Run returned, and that the cancel
+// was the STALL path, not the absolute ceiling.
+func TestShutdownDrainStallCancelsHungReconcile(t *testing.T) {
+	rt := newFakeRuntime()
+	rt.inspectByID["live-id"] = enabledContainer("nutrition")
 
 	rec := &blockingReconciler{entered: make(chan struct{}, 1)}
 	logBuf := &syncBuffer{}
@@ -159,7 +292,10 @@ func TestShutdownDrainBoundedByDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	d.shutdownDrain = 150 * time.Millisecond // short deadline for the test
+	// A short stall window so the hang is cut quickly; the ceiling is far away so
+	// the STALL path, not the ceiling, must be what fires.
+	d.shutdownStall = 120 * time.Millisecond
+	d.shutdownCeiling = 10 * time.Second
 
 	ctx, cancel := context.WithCancel(context.Background())
 	runErr := make(chan error, 1)
@@ -178,7 +314,16 @@ func TestShutdownDrainBoundedByDeadline(t *testing.T) {
 	}
 
 	start := time.Now()
-	cancel() // shutdown: flush -> the reconcile hangs -> the deadline must unwedge it
+	cancel() // shutdown: flush -> the reconcile hangs -> the stall watchdog must unwedge it
+
+	// The hung reconcile actually started (so a stall, not a no-op, is what we cut).
+	select {
+	case <-rec.entered:
+	case <-time.After(3 * time.Second):
+		cancel()
+		<-runErr
+		t.Fatal("the flushed reconcile never entered; the test did not exercise a hang")
+	}
 
 	select {
 	case err := <-runErr:
@@ -186,14 +331,140 @@ func TestShutdownDrainBoundedByDeadline(t *testing.T) {
 			t.Fatalf("Run returned an error: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not return: a hung reconcile wedged shutdown, the drain deadline did not fire")
+		t.Fatal("Run did not return: a hung reconcile wedged shutdown, the stall watchdog did not fire")
+	}
+	elapsed := time.Since(start)
+
+	// The worker context was the thing cancelled (the reconcile saw it).
+	if got := rec.observedCtxErr(); got != context.Canceled {
+		t.Fatalf("worker ctx err = %v, want context.Canceled: the stall watchdog must cancel the WORKER context", got)
+	}
+	// It was the stall path, cut promptly, not the far-off ceiling and not the old
+	// fixed 10s deadline.
+	if !waitForLog(logBuf, "shutdown drain stalled", 2*time.Second) {
+		t.Fatalf("expected the stall-cancel warning; log was:\n%s", logBuf.String())
+	}
+	if s := logBuf.String(); strings.Contains(s, "absolute ceiling") {
+		t.Fatalf("the ceiling fired on a hung reconcile; the stall path should have cut it first. log:\n%s", s)
+	}
+	// Roughly one stall window: at least the window (a timer cannot fire early) and
+	// well short of the ceiling / the old 10s deadline.
+	if elapsed < d.shutdownStall-20*time.Millisecond {
+		t.Fatalf("shutdown took %s, less than the %s stall window: the watchdog cut before a real stall elapsed", elapsed, d.shutdownStall)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("shutdown took %s, far longer than one stall window: the hang was not cut promptly", elapsed)
+	}
+}
+
+// TestShutdownDrainCeilingCapsPathologicalStream is acceptance criterion 3: the
+// absolute ceiling caps a pathological worker that keeps "completing" trivial
+// work forever (which keeps resetting the stall window so the stall path never
+// fires). The worker is cancelled at the ceiling, not left to run without bound.
+//
+// The pathological stream is fault-injected at the progress seam: a job whose run
+// loops emitting the worker's completion signal until its context is cancelled,
+// exactly modelling a reconcile stuck in a tight loop that reports micro-progress
+// but never ends. The stall window never fires (progress keeps resetting it); the
+// absolute ceiling, which is never reset, is the only thing that can stop it.
+func TestShutdownDrainCeilingCapsPathologicalStream(t *testing.T) {
+	rt := newFakeRuntime()
+
+	rec := &fakeReconciler{}
+	logBuf := &syncBuffer{}
+	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	d, err := New(Config{
+		Runtime:    rt,
+		Reconciler: rec,
+		Notifier:   &capturingNotifier{},
+		Config:     testConfig(),
+		Logger:     logger,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// The stream reports progress every 8ms, far inside the 60ms stall window, so
+	// the stall path can NEVER fire; the 150ms ceiling is the only bound that can.
+	d.shutdownStall = 60 * time.Millisecond
+	d.shutdownCeiling = 150 * time.Millisecond
+
+	// A job that keeps completing trivial work forever, until the worker context is
+	// cancelled. Each tick emits the worker's own progress signal, so the drain's
+	// stall window is perpetually reset.
+	started := make(chan struct{})
+	var startOnce sync.Once
+	var sawCancel struct {
+		mu  sync.Mutex
+		hit bool
+	}
+	d.queue.push(job{
+		key: "\x00pathological",
+		run: func(ctx context.Context) {
+			tick := time.NewTicker(8 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					sawCancel.mu.Lock()
+					sawCancel.hit = true
+					sawCancel.mu.Unlock()
+					return
+				case <-tick.C:
+					startOnce.Do(func() { close(started) })
+					d.signalJobDone() // "completed" trivial work: resets the stall window
+				}
+			}
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runErr := make(chan error, 1)
+	go func() { runErr <- d.Run(ctx) }()
+
+	// Make sure the pathological stream is actually running before shutdown, so the
+	// drain measures its progress from the start of the ceiling window.
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		cancel()
+		<-runErr
+		t.Fatal("the pathological stream never started emitting progress")
 	}
 
-	if elapsed := time.Since(start); elapsed > 3*time.Second {
-		t.Fatalf("shutdown took %s, far longer than the drain deadline: the bound did not apply", elapsed)
+	start := time.Now()
+	cancel() // shutdown: the stream keeps resetting the stall, only the ceiling can cut it
+
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run returned an error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return: the ceiling did not cap a stream that keeps completing trivial jobs")
 	}
-	if !waitForLog(logBuf, "shutdown drain exceeded deadline", 2*time.Second) {
-		t.Fatalf("expected the deadline-exceeded warning to be logged; log was:\n%s", logBuf.String())
+	elapsed := time.Since(start)
+
+	// The worker context was cancelled at the ceiling (the stream saw it and left).
+	sawCancel.mu.Lock()
+	hit := sawCancel.hit
+	sawCancel.mu.Unlock()
+	if !hit {
+		t.Fatal("the pathological stream was never cancelled: the ceiling did not cancel the worker context")
+	}
+	// It was the ceiling path, not the stall path (progress kept the stall alive).
+	if !waitForLog(logBuf, "absolute ceiling", 2*time.Second) {
+		t.Fatalf("expected the ceiling-cancel warning; log was:\n%s", logBuf.String())
+	}
+	if s := logBuf.String(); strings.Contains(s, "shutdown drain stalled") {
+		t.Fatalf("the stall path fired, but progress should have kept it reset; only the ceiling should cut this. log:\n%s", s)
+	}
+	// The ceiling actually held it that long (a timer cannot fire early) and no
+	// longer than a small margin past it.
+	if elapsed < d.shutdownCeiling-20*time.Millisecond {
+		t.Fatalf("shutdown took %s, less than the %s ceiling: the cap fired early", elapsed, d.shutdownCeiling)
+	}
+	if elapsed > d.shutdownCeiling+2*time.Second {
+		t.Fatalf("shutdown took %s, far past the %s ceiling: the cap did not hold the line", elapsed, d.shutdownCeiling)
 	}
 }
 
