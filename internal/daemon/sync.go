@@ -64,9 +64,16 @@ func (d *Daemon) syncKey(ctx context.Context, key, id string) {
 	c, err := d.rt.Inspect(ctx, id)
 	if err != nil {
 		// The container the debouncer last saw is gone. KEEP: recompute orphans,
-		// never tear down. The slug's stale sticky errors are cleared by the
-		// retainSlugs step inside refreshFromList.
+		// never tear down. Clear THIS slug's sticky errors immediately by slug (they
+		// can no longer be acted on from labels), then forget its key. The batch
+		// retainSlugs inside refreshFromList would also drop it, but the targeted
+		// clear here is authoritative for the removed slug and still fires when the
+		// follow-up listing fails and refreshFromList returns before retainSlugs.
 		d.log.Info("container gone, keeping aboard objects as orphans (Fork 8 KEEP)", "service", key)
+		if slug, ok := d.lookupSlug(key); ok {
+			d.sticky.clearSlug(slug)
+			d.forgetSlug(key)
+		}
 		d.refreshFromList(ctx)
 		return
 	}
@@ -95,7 +102,18 @@ func (d *Daemon) processContainer(ctx context.Context, c runtime.Container) (str
 	if !sp.Enable {
 		// Not opted in. The only interesting issue here is the declared-but-unarmed
 		// warning (aboard.* labels present without aboard.enable), which is a
-		// transient alert, not sticky. There is nothing to reconcile.
+		// transient alert, not sticky. There is nothing to reconcile. Opting out is
+		// a single removal from aboard's view: clear any sticky errors the slug this
+		// key last resolved to still carries (they can no longer be acted on from
+		// labels) and forget its key, so a container that goes enabled->disabled does
+		// not leave standing errors until the next full retention pass. discovery
+		// leaves sp.Slug empty for a disabled container, so the removed slug comes
+		// from the key->slug index, not sp.
+		key := serviceIdentity(c)
+		if slug, ok := d.lookupSlug(key); ok {
+			d.sticky.clearSlug(slug)
+			d.forgetSlug(key)
+		}
 		d.notifyTransient(ctx, service, issues)
 		return "", false
 	}
@@ -136,6 +154,11 @@ func (d *Daemon) processContainer(ctx context.Context, c runtime.Container) (str
 	added := d.sticky.replaceSlug(sp.Slug, service, all, d.now())
 	d.notifySticky(ctx, added)
 	d.notifyTransient(ctx, service, all)
+
+	// Record the key->slug mapping so a later removal event for this service (which
+	// carries only the key, the container being gone) can clear exactly this slug's
+	// sticky state.
+	d.rememberSlug(serviceIdentity(c), sp.Slug)
 
 	return sp.Slug, true
 }

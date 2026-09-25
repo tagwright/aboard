@@ -22,6 +22,7 @@ import (
 type fakeRuntime struct {
 	mu          sync.Mutex
 	containers  []runtime.Container
+	listErr     error
 	inspectByID map[string]runtime.Container
 	inspectErr  map[string]error
 	events      chan runtime.Event
@@ -40,6 +41,9 @@ func newFakeRuntime() *fakeRuntime {
 func (f *fakeRuntime) List(_ context.Context) ([]runtime.Container, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	out := make([]runtime.Container, len(f.containers))
 	copy(out, f.containers)
 	return out, nil

@@ -81,6 +81,19 @@ func (s *stickySet) replaceSlug(slug, service string, issues []discovery.Issue, 
 	return added
 }
 
+// clearSlug drops every sticky entry for slug. It is the single-removal
+// counterpart to retainSlugs: when one container is gone or has opted out, its
+// slug's errors can no longer be acted on from labels, so they are cleared
+// immediately by slug rather than waiting for the next full retention pass. This
+// also closes the gap where the removal's follow-up container listing fails: the
+// batch retainSlugs never runs on that path, but the known-removed slug is still
+// cleared here.
+func (s *stickySet) clearSlug(slug string) {
+	s.mu.Lock()
+	delete(s.bySlug, slug)
+	s.mu.Unlock()
+}
+
 // retainSlugs drops every slug not in keep. It runs after an orphan recompute:
 // a slug with no enabled container can no longer be fixed by editing labels, so
 // its stale sticky errors are cleared and the orphan surfacing takes over.

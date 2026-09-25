@@ -61,6 +61,14 @@ import (
 // enough that a real change reconciles promptly.
 const DefaultDebounceWindow = 750 * time.Millisecond
 
+// DefaultShutdownDrain bounds the graceful shutdown drain: after the socket watch
+// stops, Run flushes the debouncer's pending coalesced changes onto the serial
+// queue and lets the worker drain them, but only for this long. If an in-flight
+// reconcile hangs (a stuck Authentik REST call), the deadline cancels the worker
+// so shutdown always completes rather than wedging. A clean drain returns well
+// inside it; this is a ceiling, not a wait.
+const DefaultShutdownDrain = 10 * time.Second
+
 // DefaultDockerSocket is the socket BuildRuntime dials for runtime "docker" when
 // no socket override is configured. aboard reads the socket, it never writes to
 // it. The podman counterpart is DefaultPodmanSocket in runtime.go.
@@ -156,6 +164,7 @@ type Daemon struct {
 
 	debounceWindow time.Duration
 	digestSchedule string
+	shutdownDrain  time.Duration
 
 	queue  *workQueue
 	deb    *debouncer
@@ -167,6 +176,12 @@ type Daemon struct {
 	groupsHeader  traefik.GroupsHeaderState
 	orphans       []reconcile.Orphan
 	applied       map[string]appliedView
+	// slugByKey maps a debounce key (the stable service identity) to the Authentik
+	// slug last resolved for it. A removal event carries only the key (the
+	// container is gone, so its labels can no longer be read to re-derive the
+	// slug), and the sticky set is keyed by slug, so this index is what lets a
+	// single removal clear exactly that slug's sticky errors.
+	slugByKey map[string]string
 }
 
 // appliedView is the last-applied summary for one slug: enough for status and
@@ -219,9 +234,11 @@ func New(cfg Config) (*Daemon, error) {
 		now:            now,
 		debounceWindow: window,
 		digestSchedule: schedule,
+		shutdownDrain:  DefaultShutdownDrain,
 		queue:          newWorkQueue(),
 		sticky:         newStickySet(),
 		applied:        map[string]appliedView{},
+		slugByKey:      map[string]string{},
 	}
 	// The debouncer's flush enqueues a coalesced per-service sync onto the single
 	// serial queue. onFlush is called from a timer goroutine with no context, so
@@ -248,12 +265,22 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	var wg sync.WaitGroup
 
+	// The serial worker runs on its OWN context, rooted at Background rather than
+	// the caller's ctx. On shutdown (ctx cancelled) we flush the debouncer's
+	// pending work onto the queue and let the worker drain it; if the worker shared
+	// the already-cancelled ctx it would abort every in-flight reconcile the moment
+	// ctx was done, so the flush would enqueue work that never ran. workerCtx keeps
+	// the drain alive, and the bounded wait below (shutdownDrain) cancels it if a
+	// reconcile hangs, so shutdown still always completes.
+	workerCtx, cancelWorker := context.WithCancel(context.Background())
+	defer cancelWorker()
+
 	// The single serial worker. Every Authentik-touching operation runs here, one
 	// at a time, which is what keeps the shared outpost providers list safe.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		d.runWorker(ctx)
+		d.runWorker(workerCtx)
 	}()
 
 	// The daily digest ticker, when the schedule parses to a positive interval.
@@ -277,10 +304,32 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// until ctx is cancelled.
 	d.runLoop(ctx)
 
-	// Shutdown: close the queue so the worker drains and exits, then wait.
-	d.queue.close()
+	// Graceful shutdown. The socket watch has returned, so no new events arrive.
+	// Flush the debouncer's pending coalesced changes onto the serial queue so a
+	// settled change is reconciled rather than dropped, block further observes,
+	// then close the queue so the worker drains the remaining jobs and exits. Order
+	// matters: flushNow must run BEFORE close (a push to a closed queue is dropped).
+	d.deb.flushNow()
 	d.deb.stop()
-	wg.Wait()
+	d.queue.close()
+
+	// Wait for the worker (and the digest goroutine, already unwound by ctx) to
+	// drain, but bound it: if a reconcile hangs, cancel workerCtx so the worker
+	// stops and shutdown completes rather than wedging forever.
+	drained := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(d.shutdownDrain):
+		d.log.Warn("shutdown drain exceeded deadline, cancelling in-flight reconcile",
+			"deadline", d.shutdownDrain.String())
+		cancelWorker()
+		<-drained
+	}
+
 	d.log.Info("aboard daemon stopped")
 	return nil
 }
@@ -359,6 +408,33 @@ func (d *Daemon) recordApplied(sp spec.Spec, res *reconcile.Result) {
 		When:     d.now(),
 	}
 	d.mu.Unlock()
+}
+
+// rememberSlug records the slug last resolved for a debounce key, so a later
+// removal event (which carries only the key, the container being gone) can clear
+// exactly that slug's sticky state. Called whenever a container is processed as
+// enabled.
+func (d *Daemon) rememberSlug(key, slug string) {
+	d.mu.Lock()
+	d.slugByKey[key] = slug
+	d.mu.Unlock()
+}
+
+// forgetSlug drops the key->slug mapping for a key whose container is gone or has
+// opted out, so the index does not accumulate stale entries.
+func (d *Daemon) forgetSlug(key string) {
+	d.mu.Lock()
+	delete(d.slugByKey, key)
+	d.mu.Unlock()
+}
+
+// lookupSlug returns the slug last resolved for a debounce key and whether one
+// was recorded.
+func (d *Daemon) lookupSlug(key string) (string, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	slug, ok := d.slugByKey[key]
+	return slug, ok
 }
 
 // snapshotApplied returns the last-applied views in a stable order (by slug), the

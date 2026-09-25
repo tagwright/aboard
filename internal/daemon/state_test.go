@@ -54,3 +54,31 @@ func TestStickyReplaceAndRetain(t *testing.T) {
 		t.Fatalf("after retain, sticky = %v, want only [kept]", list)
 	}
 }
+
+// TestStickyClearSlug proves the single-slug clear drops exactly the named slug's
+// entries and leaves every other slug untouched, the removal counterpart to the
+// batch retainSlugs.
+func TestStickyClearSlug(t *testing.T) {
+	s := newStickySet()
+	now := time.Date(2026, 9, 25, 10, 0, 0, 0, time.UTC)
+	errIssue := discovery.Issue{Severity: discovery.SeverityError, Code: "unwired-middleware", Message: "no middleware"}
+
+	s.replaceSlug("gone", "gone", []discovery.Issue{errIssue}, now)
+	s.replaceSlug("kept", "kept", []discovery.Issue{errIssue}, now)
+	if s.count() != 2 {
+		t.Fatalf("setup: sticky count = %d, want 2", s.count())
+	}
+
+	s.clearSlug("gone")
+
+	list := s.list()
+	if len(list) != 1 || list[0].Slug != "kept" {
+		t.Fatalf("after clearSlug(gone), sticky = %v, want only [kept]", list)
+	}
+
+	// Clearing an absent slug is a harmless no-op.
+	s.clearSlug("never-existed")
+	if s.count() != 1 {
+		t.Fatalf("clearSlug of an absent slug changed the set; count = %d, want 1", s.count())
+	}
+}

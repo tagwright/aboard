@@ -77,9 +77,45 @@ func (d *debouncer) fire(key string) {
 	d.onFlush(key, id)
 }
 
-// stop halts every armed timer and blocks further observes. Pending entries are
-// dropped, not flushed: shutdown discards in-flight debounces rather than firing
-// a burst of reconciles into a closing queue.
+// flushNow fires every pending key immediately, bypassing the quiet-window
+// timers, and clears the pending set. It is the graceful-shutdown counterpart to
+// stop: Run calls it before stop (daemon.go), so a change that has settled but
+// whose window has not yet elapsed is reconciled rather than dropped on the way
+// out. Each pending key's timer is stopped under the lock so it cannot also fire,
+// and onFlush is invoked outside the lock (as fire does) so it can enqueue
+// freely. A no-op once stopped, so a stray call after stop cannot resurrect work.
+func (d *debouncer) flushNow() {
+	d.mu.Lock()
+	if d.stopped {
+		d.mu.Unlock()
+		return
+	}
+	keys := make([]string, 0, len(d.pending))
+	ids := make([]string, 0, len(d.pending))
+	for k, id := range d.pending {
+		keys = append(keys, k)
+		ids = append(ids, id)
+	}
+	for _, k := range keys {
+		if t := d.timers[k]; t != nil {
+			t.Stop()
+		}
+		delete(d.timers, k)
+		delete(d.pending, k)
+	}
+	d.mu.Unlock()
+
+	for i, k := range keys {
+		d.onFlush(k, ids[i])
+	}
+}
+
+// stop halts every armed timer and blocks further observes. Any entries STILL
+// pending are dropped, not flushed. Graceful shutdown flushes first (Run calls
+// flushNow, then stop), so by the time stop runs the pending set is normally
+// empty; the drop here is the backstop for anything that arrived in between and
+// the guard that blocks a late observe from arming a new timer into a closing
+// queue.
 func (d *debouncer) stop() {
 	d.mu.Lock()
 	defer d.mu.Unlock()

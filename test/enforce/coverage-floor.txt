@@ -36,7 +36,11 @@
 #   internal/daemon     measured 78.9%
 #   internal/discovery  measured 89.5%
 #   internal/reconcile  measured 75.2%
+#
+# Ratchet raised 2026-09-25: internal/daemon climbed to 83.7% when the graceful
+# shutdown flush and the single-removal sticky clear were wired in with their
+# tests, so its floor rises from 78 to 83 to lock the gain in.
 internal/authentik 56
-internal/daemon 78
+internal/daemon 83
 internal/discovery 89
 internal/reconcile 75
