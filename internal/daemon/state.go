@@ -81,14 +81,6 @@ func (s *stickySet) replaceSlug(slug, service string, issues []discovery.Issue, 
 	return added
 }
 
-// clearSlug drops every sticky entry for slug. Used when a slug's container is
-// gone and its errors can no longer be acted on from labels.
-func (s *stickySet) clearSlug(slug string) {
-	s.mu.Lock()
-	delete(s.bySlug, slug)
-	s.mu.Unlock()
-}
-
 // retainSlugs drops every slug not in keep. It runs after an orphan recompute:
 // a slug with no enabled container can no longer be fixed by editing labels, so
 // its stale sticky errors are cleared and the orphan surfacing takes over.

@@ -165,12 +165,6 @@ type VerifyResult struct {
 	FleetCallbackPresent bool
 }
 
-// HasError reports whether the result carries any finding. Every Traefik finding
-// is a SeverityError, so any finding is a skip-and-alert.
-func (r VerifyResult) HasError() bool {
-	return discovery.HasError(r.Findings)
-}
-
 // Verify audits a container's Traefik router labels against the mixed-host
 // callback rule (Fork 6). It is the pure core: the daemon (chunk 6) supplies
 // fleetCallbackPresent by detecting a catch-all router on authentik-server once,

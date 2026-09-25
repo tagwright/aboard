@@ -94,22 +94,6 @@ func (q *workQueue) close() {
 	q.cond.Broadcast()
 }
 
-// depth reports how many distinct keys are waiting. It exists for tests and
-// status, and takes the lock so it is safe to call concurrently.
-func (q *workQueue) depth() int {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return len(q.order)
-}
-
-// queuedKeys returns the waiting keys in FIFO order, for tests.
-func (q *workQueue) queuedKeys() []string {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	out := append([]string(nil), q.order...)
-	return out
-}
-
 // runWorker is the SINGLE serial consumer. It pops and runs jobs one at a time
 // until the queue is closed and drained or the context is cancelled. Because
 // there is exactly one runWorker goroutine and it runs each job to completion

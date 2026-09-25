@@ -1,0 +1,22 @@
+# Skip budget for aboard (Testing Standard enforceability layer, task #552).
+#
+# INTEGRATION_SKIP_BUDGET is the most t.Skip/t.Skipf/t.SkipNow calls allowed in
+# //go:build integration test files. These are the ALLOWED resource-absent skips:
+# each skips cleanly when its resource (a Docker socket, a live Authentik) is
+# absent and runs for real under the live harness on the self-hosted runner, or
+# when the operator runs it. This number is a ratchet: removing a skip never
+# breaks the build. Raising it is a reviewed change that must name the new
+# resource-absent skip it admits.
+#
+# Skips in NON-integration test files (the always-run `go test ./...` leg) are
+# banned outright, budget 0, enforced by the script with no entry here: that leg
+# has no absent resource to justify a skip, so a skip there is skip-to-get-green.
+#
+# aboard has ZERO t.Skip calls anywhere and ZERO //go:build integration test
+# files today: its live harness is the shell harness in test/integration/ (run by
+# run-all.sh), not Go integration tests, so there is no resource-gated Go test to
+# skip. Budget 0. If a resource-gated Go integration test is ever added, put it
+# behind //go:build integration and raise this number to admit its one skip,
+# naming it here (as bilgeline does for its live-ntfy leg) -- never leave a
+# resource-gated test in the always-run leg.
+INTEGRATION_SKIP_BUDGET=0

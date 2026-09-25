@@ -10,6 +10,16 @@ import (
 	"time"
 )
 
+// pendingCount reports how many keys are waiting to flush. It is the coalescing
+// invariant the tests below assert against (N rapid events for one key leave
+// exactly one pending entry, not N), and it is used only by those tests, so it
+// lives here rather than in the production file the deadcode gate roots at.
+func (d *debouncer) pendingCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.pending)
+}
+
 // TestDebounceCoalescesBurst proves a rapid burst for one service collapses to a
 // single flush carrying the LATEST container id, which is how a force-recreate's
 // die-plus-start settles into one reconcile of the live container.

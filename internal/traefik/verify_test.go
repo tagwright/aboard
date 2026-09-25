@@ -11,6 +11,14 @@ import (
 	"github.com/tagwright/aboard/internal/spec"
 )
 
+// HasError reports whether the result carries any finding. Every Traefik finding
+// is a SeverityError, so any finding is a skip-and-alert. It is used only by the
+// tests in this file, so it lives here rather than in the production file the
+// deadcode gate roots at.
+func (r VerifyResult) HasError() bool {
+	return discovery.HasError(r.Findings)
+}
+
 // testCfg is a proxy: traefik config with the fleet defaults the verifier reads.
 func testCfg() *config.Config {
 	c := &config.Config{}

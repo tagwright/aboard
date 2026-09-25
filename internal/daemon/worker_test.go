@@ -10,6 +10,22 @@ import (
 	"time"
 )
 
+// depth and queuedKeys are queue introspection helpers used only by the tests in
+// this file, so they live here rather than in the production file the deadcode
+// gate roots at. Both take the lock so they are safe to call concurrently.
+func (q *workQueue) depth() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.order)
+}
+
+func (q *workQueue) queuedKeys() []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out := append([]string(nil), q.order...)
+	return out
+}
+
 // TestWorkerSerializesReconciles is the load-bearing correctness proof for this
 // chunk. The embedded outpost's providers list is a SHARED object: every
 // forward-auth reconcile reads the list, appends its own provider pk, and PATCHes

@@ -1,0 +1,42 @@
+# Wiring-package statement-coverage floors for aboard (Testing Standard
+# enforceability layer, task #552). Format: "<package> <floor-percent>", one
+# per line, blank lines and #-comments ignored.
+#
+# Scoped to the WIRING packages only -- the socket-event-to-effect and
+# drive-the-backend layer where this suite's confirmed bugs live -- never a
+# global percentage. aboard's wiring is:
+#   internal/discovery  the socket-event to resolved-spec layer (list/inspect the
+#                       container socket, parse the aboard.* labels, resolve fields)
+#   internal/reconcile  the orchestrator: decide, create/adopt, bind, attach-last,
+#                       poll go-live, and the orphan scan
+#   internal/daemon     the daemon control loop (watch, debounce, serial worker,
+#                       sync, sticky-error state, digest, notifier wiring)
+#   internal/authentik  the drive-the-backend REST client. It is floored as wiring
+#                       because it is where three of the harness-found bugs lived
+#                       (list pagination never terminating on next:0, proxy-vs-oidc
+#                       ownership misread, apps access-filtered out of the view) --
+#                       the exact drive-the-backend class the Standard names.
+#
+# internal/traefik is NOT floored: it is aboard's Traefik VERIFIER, self-described
+# in verify.go as "the pure core ... the verifier never touches a socket," and
+# aboard never mutates Traefik. It is Level 1 pure logic, not wiring, so it is
+# excluded here the same way bilgeline excludes its pure otelcol-render package and
+# ballast floors only its daemon-loop wiring. internal/config, internal/secret,
+# internal/spec, and internal/blueprint are likewise pure core (parse/validate/
+# derive/canonicalize, no socket, no clock) and are not wiring.
+#
+# This is a ratchet: a floor may only RISE. Raise a number when coverage climbs so
+# a later regression trips the gate; never lower one to make a regression pass
+# (that is the "never weaken a gate" rule the Standard forbids).
+#
+# Baselines measured 2026-09-25 on golang:1.25 (go1.25.8, deterministic under
+# -count=1), floored to a whole percent at/below the measured value to absorb
+# toolchain rounding:
+#   internal/authentik  measured 56.4%
+#   internal/daemon     measured 78.9%
+#   internal/discovery  measured 89.5%
+#   internal/reconcile  measured 75.2%
+internal/authentik 56
+internal/daemon 78
+internal/discovery 89
+internal/reconcile 75
