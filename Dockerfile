@@ -26,7 +26,7 @@
 #   - the secrets dir (ABOARD_SECRETS_DIR, default /run/aboard/secrets), where
 #     berm delivers the Authentik API token and any named OIDC client secrets
 
-FROM golang:1.25 AS build
+FROM golang:1.25.14 AS build
 
 ENV GOPRIVATE=github.com/tagwright/*
 

@@ -10,7 +10,7 @@
 # What it does, in order (cheapest scenario first, fail on first break):
 #   1. stand up the DISPOSABLE Authentik stack (docker-compose.yml) on its own
 #      compose project + network (aboard-itest-net), wait for it healthy,
-#   2. build the real aboard binary CGO-free in a golang:1.25 container,
+#   2. build the real aboard binary CGO-free in a golang:1.25.14 container,
 #   3. api    - assert the disposable Authentik REST API is reachable and the
 #               bootstrap token is valid,
 #   4. pass   - run one real `aboard daemon` boot reconcile pass and assert it
@@ -98,13 +98,13 @@ fi
 
 # --- build the real binary --------------------------------------------------
 # CGO-free, matching the Dockerfile build stage, into the harness dir where
-# pass.sh and golive.sh mount it. Built in golang:1.25 so there is no host Go
+# pass.sh and golive.sh mount it. Built in golang:1.25.14 so there is no host Go
 # dependency; the source is the repo root (a workspace path the runner shares
 # into the dind at the same path, exactly as ballast's harness relies on).
-log "build the real aboard binary (golang:1.25, CGO-free)"
+log "build the real aboard binary (golang:1.25.14, CGO-free)"
 docker run --rm -v "$REPO_ROOT":/src -w /src \
   -e GOPRIVATE=github.com/tagwright/* -e GOFLAGS=-buildvcs=false \
-  golang:1.25 sh -c 'CGO_ENABLED=0 go build -o test/integration/aboard-bin ./cmd/aboard'
+  golang:1.25.14 sh -c 'CGO_ENABLED=0 go build -o test/integration/aboard-bin ./cmd/aboard'
 if [ ! -x "$BIN" ]; then
   echo "harness: FAIL: aboard-bin was not built at $BIN" >&2
   exit 1
