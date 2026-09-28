@@ -147,7 +147,21 @@ audit, and the orphan set (owned objects with no enabled container). It reads
 Authentik but never writes. Orphaned OIDC providers, which are live
 credentials, are listed first.
 
-Beyond the two commands, confirm in Authentik that the Application appears with
+```
+aboard groups
+```
+
+lists every Authentik group the credential can read: name, member count, and
+parent group (blank for a top-level group), sorted by name, pagination fully
+walked. Read-only, so it never reconciles, prunes, creates, or writes. Use it
+to see the assignable group namespace before naming one in `aboard.groups` or
+a downstream role-mapping rule. Add `--json` for a stable
+`{name, member_count, parent}` array a script can consume. If a reconcile ever
+fails because an `aboard.groups` name does not resolve, the error itself now
+lists the available groups, so a typo is diagnosable without leaving the
+error message.
+
+Beyond these commands, confirm in Authentik that the Application appears with
 a provider named `<slug> (aboard)`, that a forward-auth provider is attached to
 the embedded outpost, and that an OIDC app's discovery URL (printed by
 `aboard render <service>`) resolves.

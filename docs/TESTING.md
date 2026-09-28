@@ -346,6 +346,65 @@ RESIDUALS: whether the forced PATCH speeds the reload up or the outpost's own
 periodic refresh would have served on the same timeline. aboard keeps the forced
 PATCH and polls, which is correct regardless.
 
+## Group discovery: `aboard groups` and the missing-group enrichment (b4)
+
+Build-document pilot feature (Vikunja #1140), enumerating the Authentik group
+namespace read-only and enriching the missing-group reconcile error with it.
+Fake-tier and unit-proven, fault-injected; the live-harness leg is tracked debt,
+not run this cycle (see RESIDUALS).
+
+1. **`ListGroups`, the client primitive.** `internal/authentik/lookups.go` walks
+   `/api/v3/core/groups/` to exhaustion with `include_users=false` (verified
+   against the live-pinned 2025.6.4 OpenAPI schema: `parent_name` and the `users`
+   pk-list length are both populated regardless, so member count is a cheap
+   pk-list length, never a pull of full user objects).
+   `TestListGroupsFollowsPaginationAndDecodesMemberCountAndParent` proves the
+   multi-page walk, the `include_users=false` query, and that only GET requests
+   are issued. `TestListGroupsStopsOnZeroNext` proves the same last-page rule as
+   `ListAllProviders` (next is a page NUMBER that is 0, not null, on the last
+   page). Three fault-injection tests prove nothing is ever silently partial or
+   empty: `TestListGroups_5xxSurfaces` (an Authentik 5xx),
+   `TestListGroups_MalformedPageSurfaces` (a syntactically invalid later page),
+   and `TestListGroups_TruncatedPaginationCursorSurfaces` (a later page's body
+   cut off mid-stream). All five live in `internal/authentik/client_test.go`.
+
+2. **`aboard groups`, the command.** `internal/cli/groups.go` is modeled on
+   `newStatusCmd` (it reads live Authentik and prints), not `newRenderCmd`
+   (Authentik-free): it calls only `ListGroups`, proven read-only by
+   `TestRunGroups_OnlyCallsListGroups`. The pure formatting core, `groupRows`
+   (raw groups to sorted, printable rows), is invariant-tested over 200
+   randomized input sets by `TestGroupRows_SortedAndCompleteOverRandomInputs`
+   (sorted by name, every group appears exactly once, member count matches the
+   input), plus `TestGroupRows_BlankParentRendersEmptyStringNotNil` and
+   `TestGroupRows_JSONRoundTripsToSameSet`. The command wiring is driven over a
+   fake `groupLister` in `internal/cli/groups_test.go`:
+   `TestRunGroups_TablePrintsSortedRows`,
+   `TestRunGroups_JSONFlagEmitsParseableArray`,
+   `TestRunGroups_EmptyFleetJSONIsEmptyArrayNotNull`, and the fail-closed proof
+   `TestRunGroups_ListFailureSurfacesNeverPrintsEmptyList` (a
+   `ListGroups` failure exits non-zero and never prints a report that looks like
+   a legitimate, if empty, group list).
+
+3. **The missing-group error enrichment, Level 3 guard.**
+   `internal/reconcile/reconcile.go`'s `resolveBindings` (the `CodeGroupMissing`
+   path) now builds its
+   message through `groupMissingMessage`, which appends the available group
+   names from `ListGroups`, best-effort: a failed lookup still returns the
+   original `CodeGroupMissing` error naming the missing group, it is never
+   masked. The guard lives in
+   `internal/reconcile/groupmissing_guard_test.go`:
+   `TestGuard_MissingGroupErrorListsAvailableGroups` asserts an unresolvable
+   `aboard.groups` name surfaces an error that both still names the missing
+   group and lists the groups that do exist, and
+   `TestGuard_MissingGroupEnrichmentIsBestEffortNeverMasksPrimaryFailure` proves
+   a failed `ListGroups` call during enrichment still surfaces the primary
+   `CodeGroupMissing` error. Proven red-then-green during this build: reverted to
+   the pre-enrichment bare message (no available-groups list, the committed
+   negative fixture), `TestGuard_MissingGroupErrorListsAvailableGroups` FAILED
+   with `got: "group-missing: group g-admins does not exist (set
+   ABOARD_CREATE_GROUPS=true to create it empty)"` (no available groups named);
+   restored, it PASSES.
+
 ## What is PARTIAL
 
 - **OIDC adoption in place** is covered by the reconciler's code path (symmetric
@@ -403,6 +462,15 @@ PATCH and polls, which is correct regardless.
   SAML is now proven end-to-end (step 10); the one SAML-side residual is the same
   as OIDC's, that finishing the integration still needs the ACS URL and entity ID
   configured on the SP by hand, which lives outside Authentik and outside aboard.
+
+- **`aboard groups` against a real Authentik** is NOT proven by the live harness
+  this cycle. `ListGroups` and `aboard groups` are fake-tier and fault-injection
+  proven (see "Group discovery" above), but no `test/integration/` scenario yet
+  drives the real `aboard groups` binary (table and `--json`) against the
+  disposable Authentik and asserts its output against that instance's actual
+  group set, member counts, and parent names. Tier B permits tracking a missing
+  live-harness leg as debt rather than blocking on it (Testing Standard, "The bar
+  per tool"); tracked as Vikunja #1145, not a permanent `untested`.
 
 ## Running the harness
 

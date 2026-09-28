@@ -45,7 +45,12 @@
 # shutdown drain was made progress-aware (a stall window plus an absolute ceiling
 # replacing the single blind deadline) with its three fault-injected tests, so its
 # floor rises from 83 to 84 to lock the gain in.
-internal/authentik 56
+#
+# Ratchet raised 2026-09-28: internal/authentik climbed to 62.1% when ListGroups
+# (paginated, with its 5xx/malformed-page/truncated-cursor fault-injection tests)
+# landed with the group-discovery build (Homelab #934 pilot, Vikunja #1140), so
+# its floor rises from 56 to 62 to lock the gain in.
+internal/authentik 62
 internal/daemon 84
 internal/discovery 89
 internal/reconcile 75
