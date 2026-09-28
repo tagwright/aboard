@@ -8,6 +8,7 @@
 //
 //	aboard daemon              run the label-driven reconcile-and-audit loop
 //	aboard status              read-only report of owned apps and orphans
+//	aboard groups              read-only list of every Authentik group, --json for scripting
 //	aboard render <service>          print the Traefik labels for one service
 //	aboard render --setup            print the once-per-fleet Traefik pieces
 //	aboard render --blueprint        print the groups + OIDC scope identity IaC
@@ -117,6 +118,7 @@ It drives Authentik, it never rebuilds the IdP.`,
 	root.AddCommand(newValidateCmd())
 	root.AddCommand(newRenderCmd())
 	root.AddCommand(newStatusCmd())
+	root.AddCommand(newGroupsCmd())
 	root.AddCommand(newPruneCmd())
 	return root
 }
