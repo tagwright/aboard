@@ -204,6 +204,50 @@ func (c *Client) GetSAMLPropertyMappingByName(ctx context.Context, name string) 
 	return nil, ErrNotFound
 }
 
+// groupsListPageSize is the page size ListGroups walks with. It has no caller-
+// facing knob (the doc's signature is ListGroups(ctx), not a pageSize
+// parameter, unlike ListAllProviders and ListProxyProviders), so it is a fixed
+// internal constant, matching the suite's usual generous default.
+const groupsListPageSize = 100
+
+// ListGroups lists every Authentik group the credential can read, walking
+// pagination to exhaustion over the same /api/v3/core/groups/ endpoint
+// GetGroupByName already reaches read-only, with no name filter. Read-only: it
+// issues only GET requests.
+//
+// It passes include_users=false: verified against the live-pinned 2025.6.4
+// OpenAPI schema, that suppresses only the nested users_obj profiles (an
+// unbounded per-user pull across the whole fleet) while the users field, the
+// member pk list ListGroups reports its count from, stays populated
+// regardless. This is the cheap-count choice the build doc calls for over
+// pulling full user objects fleet-wide.
+//
+// A failure on any page (a non-2xx, a malformed body, or a body truncated
+// mid-page) returns the error and a nil slice: it never returns a partial or
+// empty list as if the fleet had fewer groups than it does. The pagination
+// walk follows the same last-page rule as ListAllProviders and
+// ListProxyProviders: on this Authentik version "next" is a page NUMBER that
+// is 0, not null, on the last page, so the walk stops unless next names a page
+// strictly beyond the current one.
+func (c *Client) ListGroups(ctx context.Context) ([]Group, error) {
+	var all []Group
+	page := 1
+	for {
+		q := pageSizeQuery(page, groupsListPageSize)
+		q.Set("include_users", "false")
+		resp, err := listPage[Group](ctx, c, "/api/v3/core/groups/", q)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, resp.Results...)
+		if resp.Pagination.Next == nil || *resp.Pagination.Next <= page {
+			break
+		}
+		page = *resp.Pagination.Next
+	}
+	return all, nil
+}
+
 // CreateGroup creates a group with the given name and returns it. It is the one
 // group mutation aboard makes, gated behind the operator's create-groups opt-in
 // at a higher layer.

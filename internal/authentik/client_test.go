@@ -866,6 +866,163 @@ func TestAPIErrorRedactsTokenAndSecret(t *testing.T) {
 	}
 }
 
+func TestListGroupsFollowsPaginationAndDecodesMemberCountAndParent(t *testing.T) {
+	var methods []string
+	// Two real pages, the same last-page shape as ListAllProviders: page 1 points
+	// next to 2, page 2 (the last) reports next 0.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("include_users") != "false" {
+			t.Errorf("ListGroups must request include_users=false, got query %q", r.URL.RawQuery)
+		}
+		switch r.URL.Query().Get("page") {
+		case "2":
+			_, _ = io.WriteString(w, `{"pagination":{"next":0,"previous":1,"count":3},"results":[{"pk":"g3","name":"three","parent_name":null,"users":[]}]}`)
+		case "1":
+			_, _ = io.WriteString(w, `{"pagination":{"next":2,"previous":0,"count":3},"results":[{"pk":"g1","name":"one","parent_name":"parent-a","users":[1,2,3]},{"pk":"g2","name":"two","parent_name":null,"users":[4]}]}`)
+		default:
+			w.WriteHeader(404)
+			_, _ = io.WriteString(w, `{"detail":"Invalid page."}`)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	cli := New(srv.URL, testToken)
+
+	groups, err := cli.ListGroups(context.Background())
+	if err != nil {
+		t.Fatalf("ListGroups: %v", err)
+	}
+	if len(groups) != 3 {
+		t.Fatalf("got %d groups across pages, want 3: %+v", len(groups), groups)
+	}
+	if groups[0].Name != "one" || groups[0].ParentName == nil || *groups[0].ParentName != "parent-a" || len(groups[0].Users) != 3 {
+		t.Errorf("group one = %+v, want parent-a and 3 members", groups[0])
+	}
+	if groups[1].ParentName != nil {
+		t.Errorf("group two parent_name = %v, want nil (top-level)", groups[1].ParentName)
+	}
+	for _, m := range methods {
+		if m != http.MethodGet {
+			t.Fatalf("ListGroups issued a non-GET request: %s (criterion 4, read-only)", m)
+		}
+	}
+}
+
+func TestListGroupsStopsOnZeroNext(t *testing.T) {
+	// Mirrors TestListAllProvidersStopsOnZeroNext: a single page reporting next=0
+	// must not cause a page-0 request.
+	var pagesSeen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		pagesSeen = append(pagesSeen, page)
+		w.Header().Set("Content-Type", "application/json")
+		if page == "0" {
+			w.WriteHeader(404)
+			_, _ = io.WriteString(w, `{"detail":"Invalid page."}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"pagination":{"next":0,"previous":0,"count":1},"results":[{"pk":"g1","name":"solo","parent_name":null,"users":[]}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	cli := New(srv.URL, testToken)
+
+	groups, err := cli.ListGroups(context.Background())
+	if err != nil {
+		t.Fatalf("ListGroups: %v", err)
+	}
+	if len(groups) != 1 || groups[0].Name != "solo" {
+		t.Fatalf("groups = %+v, want the single page", groups)
+	}
+	for _, p := range pagesSeen {
+		if p == "0" {
+			t.Fatalf("walk requested page 0 (pages seen: %v)", pagesSeen)
+		}
+	}
+}
+
+// The three fault cases the Testing Standard names for a paginated lookup: a
+// 5xx, a malformed page, and a truncated pagination cursor. None may return a
+// partial or empty list silently, on any page including a later one, or the
+// operator sees "the fleet has no groups" when the real cause is an API or
+// decode failure (fail-closed, per the ratified standard).
+
+func TestListGroups_5xxSurfaces(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		_, _ = io.WriteString(w, `{"detail":"internal server error"}`)
+	}))
+	t.Cleanup(srv.Close)
+	cli := New(srv.URL, testToken)
+
+	groups, err := cli.ListGroups(context.Background())
+	if err == nil {
+		t.Fatal("a 500 from Authentik must surface as an error, not an empty group list")
+	}
+	if groups != nil {
+		t.Errorf("groups = %+v, want nil on failure", groups)
+	}
+}
+
+func TestListGroups_MalformedPageSurfaces(t *testing.T) {
+	// Page 1 is a genuine, well-formed page with a next cursor. Page 2 is
+	// syntactically invalid JSON. The walk must surface the decode error, not
+	// silently return page 1's results as if that were the whole fleet.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page") == "2" {
+			_, _ = io.WriteString(w, `{not valid json`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"pagination":{"next":2,"previous":0,"count":2},"results":[{"pk":"g1","name":"one","parent_name":null,"users":[]}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	cli := New(srv.URL, testToken)
+
+	groups, err := cli.ListGroups(context.Background())
+	if err == nil {
+		t.Fatal("a malformed second page must surface as an error, not a silent partial (page 1 only) list")
+	}
+	if groups != nil {
+		t.Errorf("groups = %+v, want nil on failure", groups)
+	}
+}
+
+func TestListGroups_TruncatedPaginationCursorSurfaces(t *testing.T) {
+	// Page 1 is genuine and points next to page 2. Page 2's body is a valid JSON
+	// PREFIX that is cut off mid-stream (a truncated pagination cursor: the
+	// response never finishes describing its own "next"), so the decoder hits an
+	// unexpected EOF rather than a syntax error. This must surface too, not
+	// silently return only page 1.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page") == "2" {
+			// Declare a body longer than what is written, and close the connection,
+			// so the client's decoder sees an unexpected EOF instead of valid JSON.
+			w.Header().Set("Content-Length", "200")
+			_, _ = io.WriteString(w, `{"pagination":{"next":`)
+			if hj, ok := w.(http.Hijacker); ok {
+				conn, _, err := hj.Hijack()
+				if err == nil {
+					_ = conn.Close()
+				}
+			}
+			return
+		}
+		_, _ = io.WriteString(w, `{"pagination":{"next":2,"previous":0,"count":2},"results":[{"pk":"g1","name":"one","parent_name":null,"users":[]}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	cli := New(srv.URL, testToken)
+
+	groups, err := cli.ListGroups(context.Background())
+	if err == nil {
+		t.Fatal("a truncated pagination cursor on the second page must surface as an error, not a silent partial list")
+	}
+	if groups != nil {
+		t.Errorf("groups = %+v, want nil on failure", groups)
+	}
+}
+
 func TestNonErrorPathNeverCarriesToken(t *testing.T) {
 	// A create whose success body happens to echo the token must decode fine and,
 	// since it is not an error, simply not surface it anywhere. This guards the

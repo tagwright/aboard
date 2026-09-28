@@ -255,10 +255,19 @@ type OutpostProvidersRequest struct {
 	Providers []int `json:"providers"`
 }
 
-// Group is a directory group. pk is a uuid string.
+// Group is a directory group. pk is a uuid string. ParentName and Users are
+// populated by ListGroups and by GetGroupByName's default response; both are
+// already resolved server-side, verified against the live-pinned 2025.6.4
+// OpenAPI schema (GroupSerializer): parent_name is the parent group's name,
+// nullable for a top-level group, and users is the member pk list (never the
+// nested users_obj profiles, which ListGroups deliberately does not request).
+// A group's member count is len(Users), a cheap pk-list length, not a pull of
+// full user objects.
 type Group struct {
-	PK   string `json:"pk"`
-	Name string `json:"name"`
+	PK         string  `json:"pk"`
+	Name       string  `json:"name"`
+	ParentName *string `json:"parent_name"`
+	Users      []int   `json:"users"`
 }
 
 // GroupRequest is the create body for a group.
