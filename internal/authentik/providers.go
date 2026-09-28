@@ -5,6 +5,7 @@ package authentik
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -196,8 +197,24 @@ func (c *Client) DeleteProxyProvider(ctx context.Context, pk int) error {
 	return c.do(ctx, http.MethodDelete, path, nil, nil, nil)
 }
 
-// GetOAuth2ProviderByName finds an OAuth2 provider by exact name, same shape as
-// the proxy lookup. Not found returns ErrNotFound.
+// GetOAuth2ProviderByName finds a GENUINE OAuth2/OIDC provider by exact name. Not
+// found returns ErrNotFound.
+//
+// The exact-name match alone is NOT sufficient here, unlike the proxy and SAML
+// lookups. Because ProxyProvider is a subclass of OAuth2Provider, the
+// /providers/oauth2/ list returns proxy providers too, so a forward-auth proxy
+// named "<slug> (aboard)" matches this search when no genuine OIDC provider of
+// that name exists. The component on THIS response cannot tell them apart: the
+// oauth2 viewset queryset is OAuth2Provider.objects.all() with NO
+// select_subclasses(), so a proxy row is serialized as its PARENT class and its
+// component reports ak-provider-oauth2-form, not ak-provider-proxy-form (verified
+// against authentik version/2025.6.4: only the polymorphic /providers/all/ route
+// downcasts). So the true type is confirmed by pk through GetProviderByPK, which
+// hits the polymorphic detail route that DOES downcast, and only a genuine
+// ak-provider-oauth2-form provider is returned. This mirrors the write path,
+// which discriminates a provider's type the same way (providerKindFromComponent
+// over GetProviderByPK). Without it a stale forward-auth proxy that shadows a
+// never-created OIDC provider would be reported as a live OIDC provider.
 func (c *Client) GetOAuth2ProviderByName(ctx context.Context, name string) (*OAuth2Provider, error) {
 	q := url.Values{"search": {name}}
 	page, err := listPage[OAuth2Provider](ctx, c, oauth2ProvidersPath, q)
@@ -205,7 +222,19 @@ func (c *Client) GetOAuth2ProviderByName(ctx context.Context, name string) (*OAu
 		return nil, err
 	}
 	for i := range page.Results {
-		if page.Results[i].Name == name {
+		if page.Results[i].Name != name {
+			continue
+		}
+		ref, err := c.GetProviderByPK(ctx, page.Results[i].PK)
+		if err != nil {
+			// A provider that vanished between the list and the by-pk lookup is not
+			// a genuine OIDC match; any other error is a real transport failure.
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		if ref.Component == ComponentOAuth2Provider {
 			return &page.Results[i], nil
 		}
 	}

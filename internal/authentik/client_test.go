@@ -213,6 +213,131 @@ func TestCreateOAuth2ProviderSetsClientSecret(t *testing.T) {
 	}
 }
 
+// providerByNameServer stands up an in-process Authentik that answers the
+// /providers/oauth2/ search list with oauth2ListBody and each polymorphic
+// /providers/all/{pk}/ detail request from allByPK (pk -> body). A pk missing
+// from allByPK gets a 404, which the client maps to ErrNotFound. It records the
+// paths it saw so a test can assert the by-pk confirmation actually happened.
+func providerByNameServer(t *testing.T, oauth2ListBody string, allByPK map[int]string) (*Client, *[]string) {
+	t.Helper()
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(r.URL.Path, "/api/v3/providers/all/") {
+			pkStr := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v3/providers/all/"), "/")
+			if body, ok := allByPK[atoiOrZero(pkStr)]; ok {
+				_, _ = io.WriteString(w, body)
+				return
+			}
+			w.WriteHeader(404)
+			_, _ = io.WriteString(w, `{"detail":"Not found."}`)
+			return
+		}
+		_, _ = io.WriteString(w, oauth2ListBody)
+	}))
+	t.Cleanup(srv.Close)
+	return New(srv.URL, testToken), &seen
+}
+
+func atoiOrZero(s string) int {
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
+}
+
+// A genuine OIDC provider matches by exact name: the by-pk confirmation returns
+// the ak-provider-oauth2-form component, so it is returned.
+func TestGetOAuth2ProviderByNameGenuineMatch(t *testing.T) {
+	// The search endpoint returns a fuzzy extra plus the exact-name genuine OIDC
+	// provider (pk 11). The polymorphic detail route confirms pk 11 is oauth2.
+	list := `{"pagination":{"count":2},"results":[` +
+		`{"pk":10,"name":"wiki (aboard) extra"},` +
+		`{"pk":11,"name":"wiki (aboard)"}]}`
+	byPK := map[int]string{11: `{"pk":11,"name":"wiki (aboard)","component":"ak-provider-oauth2-form"}`}
+	cli, seen := providerByNameServer(t, list, byPK)
+
+	p, err := cli.GetOAuth2ProviderByName(context.Background(), "wiki (aboard)")
+	if err != nil {
+		t.Fatalf("GetOAuth2ProviderByName: %v", err)
+	}
+	if p.PK != 11 {
+		t.Errorf("pk = %d, want 11 (the genuine oauth2 provider)", p.PK)
+	}
+	// The type must have been confirmed through the polymorphic by-pk route.
+	sawByPK := false
+	for _, path := range *seen {
+		if path == "/api/v3/providers/all/11/" {
+			sawByPK = true
+		}
+	}
+	if !sawByPK {
+		t.Errorf("expected a by-pk type confirmation on /providers/all/11/, paths seen: %v", *seen)
+	}
+}
+
+// Regression (Vikunja #1138): a forward-auth PROXY that shadows a never-created
+// OIDC provider must NOT be reported as a live OIDC provider. Because
+// ProxyProvider is a subclass of OAuth2Provider, the /providers/oauth2/ list
+// returns the proxy row too, and (verified against authentik version/2025.6.4)
+// the typed oauth2 route does not downcast, so that row's component is the
+// PARENT ak-provider-oauth2-form. Only the polymorphic by-pk route reveals it is
+// really a proxy (ak-provider-proxy-form), at which point it must be rejected as
+// not-a-genuine-OIDC and the lookup must return ErrNotFound. On the pre-fix code
+// (exact-name match wins with no by-pk confirmation) this returns the proxy, so
+// this test goes RED before the fix and GREEN after.
+func TestGetOAuth2ProviderByNameRejectsProxyShadow(t *testing.T) {
+	// The ONLY exact-name match on the oauth2 route is the proxy (pk 51). The
+	// oauth2 list serializes it with the parent component, exactly as the live API
+	// does, so the list body alone cannot tell it is a proxy.
+	list := `{"pagination":{"count":1},"results":[` +
+		`{"pk":51,"name":"token-dashboard (aboard)","component":"ak-provider-oauth2-form"}]}`
+	byPK := map[int]string{51: `{"pk":51,"name":"token-dashboard (aboard)","component":"ak-provider-proxy-form"}`}
+	cli, seen := providerByNameServer(t, list, byPK)
+
+	p, err := cli.GetOAuth2ProviderByName(context.Background(), "token-dashboard (aboard)")
+	if p != nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("p=%v err=%v, want nil + ErrNotFound (a forward-auth proxy must not be read as OIDC)", p, err)
+	}
+	sawByPK := false
+	for _, path := range *seen {
+		if path == "/api/v3/providers/all/51/" {
+			sawByPK = true
+		}
+	}
+	if !sawByPK {
+		t.Errorf("expected a by-pk type confirmation on /providers/all/51/, paths seen: %v", *seen)
+	}
+}
+
+// When a genuine OIDC provider and a proxy share the exact name, the genuine
+// oauth2 provider is returned and the proxy is skipped.
+func TestGetOAuth2ProviderByNameGenuineWinsOverSameNameProxy(t *testing.T) {
+	// Both a proxy (pk 51) and a genuine oauth2 provider (pk 60) carry the exact
+	// name; both serialize with the parent component on the oauth2 route.
+	list := `{"pagination":{"count":2},"results":[` +
+		`{"pk":51,"name":"dash (aboard)","component":"ak-provider-oauth2-form"},` +
+		`{"pk":60,"name":"dash (aboard)","component":"ak-provider-oauth2-form"}]}`
+	byPK := map[int]string{
+		51: `{"pk":51,"name":"dash (aboard)","component":"ak-provider-proxy-form"}`,
+		60: `{"pk":60,"name":"dash (aboard)","component":"ak-provider-oauth2-form"}`,
+	}
+	cli, _ := providerByNameServer(t, list, byPK)
+
+	p, err := cli.GetOAuth2ProviderByName(context.Background(), "dash (aboard)")
+	if err != nil {
+		t.Fatalf("GetOAuth2ProviderByName: %v", err)
+	}
+	if p.PK != 60 {
+		t.Errorf("pk = %d, want 60 (the genuine oauth2 provider, not the same-name proxy)", p.PK)
+	}
+}
+
 func TestGetSAMLProviderByNameExactMatch(t *testing.T) {
 	var cap capture
 	resp := `{"pagination":{"count":2},"results":[{"pk":20,"name":"kimai (aboard) copy"},{"pk":21,"name":"kimai (aboard)"}]}`
