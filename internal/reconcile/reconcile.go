@@ -6,6 +6,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -518,8 +519,7 @@ func (r *Reconciler) resolveBindings(ctx context.Context, res *Result, groups, p
 			return nil, r.fail(res, CodeAPI, "look up group "+name+": "+err.Error())
 		}
 		if !r.cfg.Globals.CreateGroups {
-			return nil, r.fail(res, CodeGroupMissing,
-				"group "+name+" does not exist (set ABOARD_CREATE_GROUPS=true to create it empty)")
+			return nil, r.fail(res, CodeGroupMissing, groupMissingMessage(ctx, r.api, name))
 		}
 		created, cerr := r.api.CreateGroup(ctx, name)
 		if cerr != nil {
@@ -541,6 +541,35 @@ func (r *Reconciler) resolveBindings(ctx context.Context, res *Result, groups, p
 	}
 
 	return out, nil
+}
+
+// groupMissingMessage builds the CodeGroupMissing error text: the missing
+// group name, plus the available Authentik group namespace, so the operator
+// sees which groups actually exist at the point of the typo instead of having
+// to leave aboard and read Authentik directly.
+//
+// The available-groups lookup is BEST-EFFORT and never masks the primary
+// failure: the caller always gets a CodeGroupMissing error naming the missing
+// group, whether or not ListGroups succeeds. A failed lookup is reported
+// inline (with its own error text) rather than silently dropped, so a broken
+// enrichment path is itself visible instead of quietly degrading to the old
+// bare message.
+func groupMissingMessage(ctx context.Context, api API, name string) string {
+	msg := "group " + name + " does not exist (set ABOARD_CREATE_GROUPS=true to create it empty)"
+
+	groups, err := api.ListGroups(ctx)
+	if err != nil {
+		return msg + "; available groups could not be listed: " + err.Error()
+	}
+	if len(groups) == 0 {
+		return msg + "; no groups exist in Authentik"
+	}
+	names := make([]string, len(groups))
+	for i, g := range groups {
+		names[i] = g.Name
+	}
+	sort.Strings(names)
+	return msg + "; available groups: " + strings.Join(names, ", ")
 }
 
 // convergeProxyProvider creates or PATCHes the aboard-named proxy provider for a

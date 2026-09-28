@@ -422,6 +422,21 @@ func (f *fakeAPI) CreateGroup(_ context.Context, name string) (*authentik.Group,
 	return g, nil
 }
 
+// ListGroups returns every registered group, or the injected fault. It backs
+// both the "aboard groups" command's tests and the CodeGroupMissing enrichment
+// guard: newFake's f.groups starts empty, so a reconcile that never registers
+// one (the common case in these tests) sees an empty, not nil-erroring, list.
+func (f *fakeAPI) ListGroups(_ context.Context) ([]authentik.Group, error) {
+	if err := f.rec("ListGroups"); err != nil {
+		return nil, err
+	}
+	groups := make([]authentik.Group, 0, len(f.groups))
+	for _, g := range f.groups {
+		groups = append(groups, *g)
+	}
+	return groups, nil
+}
+
 func (f *fakeAPI) GetPolicyByName(_ context.Context, name string) (*authentik.Policy, error) {
 	if err := f.rec("GetPolicyByName"); err != nil {
 		return nil, err

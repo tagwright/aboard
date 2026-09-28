@@ -92,6 +92,12 @@ type API interface {
 	CreateGroup(ctx context.Context, name string) (*authentik.Group, error)
 	GetPolicyByName(ctx context.Context, name string) (*authentik.Policy, error)
 
+	// ListGroups enumerates the whole group namespace. resolveBindings uses it,
+	// best-effort, to enrich a CodeGroupMissing error with the available group
+	// names at the point of the typo; a failed lookup never masks the primary
+	// missing-group error. It is also what the "aboard groups" command drives.
+	ListGroups(ctx context.Context) ([]authentik.Group, error)
+
 	// OIDC signing key and scope mappings.
 	GetCertificateByName(ctx context.Context, name string) (*authentik.CertificateKeyPair, error)
 	GetFirstSigningKey(ctx context.Context) (*authentik.CertificateKeyPair, error)
